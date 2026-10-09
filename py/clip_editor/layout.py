@@ -16,6 +16,7 @@ The JSON is produced by ``detect`` and may be corrected by hand before ``build``
     {"type": "text",  "rect": [...], "wrap": false},          # 본문 영역
     {"type": "text",  "rect": [...], "wrap": true},           # 사진 때문에 짧아진 줄 영역
     {"type": "image", "kind": "graphic" | "photo" | "portrait", "rect": [...]},
+    {"type": "image", "kind": "graphic", "mask": "silhouette", "rect": [...]},  # 본문이 둘레를 감싼 그래픽
     {"type": "block", "label": "byline",   "rect": [...]}    # 기자명 (그대로)
   ]
 }
@@ -46,6 +47,7 @@ class FlowItem:
     kind: str = ""
     wrap: bool | None = None
     note: str = ""
+    mask: str = ""  # image only: "silhouette" = 본문과 겹친 그림은 윤곽만 가린다 (넣는 그림에도 사용)
 
     def to_json(self) -> dict:
         d: dict = {"type": self.type, "rect": self.rect.as_list()}
@@ -55,6 +57,8 @@ class FlowItem:
             d["kind"] = self.kind
         if self.type == "text" and self.wrap is not None:
             d["wrap"] = self.wrap
+        if self.mask:
+            d["mask"] = self.mask
         if self.note:
             d["note"] = self.note
         return d
@@ -106,6 +110,7 @@ class Layout:
                     kind=kind,
                     wrap=f.get("wrap"),
                     note=f.get("note", ""),
+                    mask=f.get("mask", ""),
                 )
             )
         return cls(

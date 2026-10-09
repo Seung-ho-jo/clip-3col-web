@@ -226,16 +226,24 @@ def analyze(layout: Layout) -> Analysis:
     tone = None
     ch0 = 0
     suspicious = 0
+    silhouettes: dict = {}
     for f in flow:
         if f.type != "image":
             continue
         r = src.clip(f.rect)
-        if f.kind == "portrait":
+        if f.kind == "portrait" or f.mask == "silhouette":
             if tone is None:
                 ch0 = estimate_char_h(src)
                 tone = tone_mask(src.gray, ch0)
-            pm = portrait_mask(src.ink, tone, r, ch0)
+            t_ = tone
+            if f.mask == "silhouette":
+                # 색이 진한 그림(음식·제품 사진 등)은 채도로도 윤곽을 잡는다
+                rgb = src.rgb.astype(np.int16)
+                sat = (rgb.max(axis=2) - rgb.min(axis=2)) > 60
+                t_ = tone | sat
+            pm = portrait_mask(src.ink, t_, r, ch0)
             img_mask[r.y0 : r.y1, r.x0 : r.x1] |= pm
+            silhouettes[id(f)] = (r, pm)
             suspicious += covered_glyph_ink(src.ink, tone, r, pm, ch0)
         else:
             img_mask[r.y0 : r.y1, r.x0 : r.x1] = True
@@ -258,7 +266,9 @@ def analyze(layout: Layout) -> Analysis:
     segment_atoms(page, regions, m)
     fix_indent_beside_images(regions, img_mask, m)
     paras = paragraphs(flow, regions)
-    return Analysis(src, page, regions, m, paras, cut, suspicious)
+    an = Analysis(src, page, regions, m, paras, cut, suspicious)
+    an.silhouettes = silhouettes
+    return an
 
 
 def covered_glyph_ink(ink: np.ndarray, tone: np.ndarray, r: Rect, pm: np.ndarray, ch: int) -> int:
@@ -319,6 +329,43 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
     }
 
     bottom: list[Item] = []
+    text_rects = [page.clip(f.rect) for f in flow if f.type == "text"]
+
+    silh = getattr(an, "silhouettes", {})
+    image_items = [f for f in flow if f.type == "image" and f.kind != "portrait"]
+
+    def image_crop(r: Rect, item=None) -> np.ndarray:
+        """Crop an image from the original, erasing body-text ink that falls inside it
+        (그림 상자에 걸친 본문 글자는 본문 쪽에 이미 들어가므로 그림에서 지운다)."""
+        import cv2
+
+        crop = src.crop_rgb(r).copy()
+        erase = np.zeros(crop.shape[:2], dtype=bool)
+        for t in text_rects:
+            x0, y0, x1, y1 = max(r.x0, t.x0), max(r.y0, t.y0), min(r.x1, t.x1), min(r.y1, t.y1)
+            if x1 > x0 and y1 > y0:
+                erase[y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0] |= page.ink[y0:y1, x0:x1]
+        # 원본에서 겹쳐 있던 다른 그림의 조각은 지운다 (윤곽 그림은 그 윤곽만, 나머지는 상자째)
+        mine = silh.get(id(item)) if item is not None else None
+        for o in image_items:
+            if o is item:
+                continue
+            orr = page.clip(o.rect)
+            x0, y0, x1, y1 = max(r.x0, orr.x0), max(r.y0, orr.y0), min(r.x1, orr.x1), min(r.y1, orr.y1)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            if id(o) in silh:
+                _, om = silh[id(o)]
+                erase[y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0] |= om[y0 - orr.y0 : y1 - orr.y0, x0 - orr.x0 : x1 - orr.x0]
+            else:
+                keep = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+                if mine is not None:
+                    keep = mine[1][y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0]
+                erase[y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0] |= ~keep
+        if erase.any():
+            erase = cv2.dilate(erase.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+            crop[erase] = page.paper_rgb
+        return crop
 
     def make_items(include_photos: bool) -> tuple[list[Item], list[Item], list[Item]]:
         items: list[Item] = []
@@ -363,11 +410,12 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                     continue
                 if f.kind == "photo" and not include_photos:
                     continue
+                crop = image_crop(r, f)
                 if r.w >= opt.wide_ratio * cw:
                     # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
-                    bottom.append(Item("image", src.crop_rgb(r), [f"I{i}"], label=f.kind))
+                    bottom.append(Item("image", crop, [f"I{i}"], label=f.kind))
                     continue
-                img, scaled = _fit_width(src.crop_rgb(r), cw)
+                img, scaled = _fit_width(crop, cw)
                 if scaled and include_photos and r.w > 1.6 * cw:
                     report["notes"].append(
                         f"{f.kind}(flow[{i}])을 단 폭에 맞춰 {cw / r.w:.0%}로 축소 — 사진 설명 글자도 함께 작아짐"

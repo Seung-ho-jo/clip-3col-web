@@ -288,7 +288,7 @@ def segment_atoms(page: Page, regions: list[Region], m: Metrics) -> None:
             adv = sorted(dists)[len(dists) // 4] if len(dists) >= 3 else None
             for k in range(1, len(at)):
                 a = at[k]
-                if adv is not None and hangul[k] and hangul[k - 1]:
+                if adv is not None and hangul[k] and hangul[k - 1] and not a.glued and not at[k - 1].glued:
                     d = (a.x0 + a.x1 - at[k - 1].x0 - at[k - 1].x1) / 2
                     a.space = d > adv + 0.5 * space_add
                 else:
