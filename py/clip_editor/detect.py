@@ -528,7 +528,9 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                     flow.append(FlowItem("text", seg, wrap=wrap))
             else:
                 label, note = label_of(b, item[2:])
-                if label == "subtitle" and not seen_body and ci > 0:
+                # 사이드바 단 맨 위의 부제, 또는 본문 중간에 끼어 있는 여러 줄짜리 부제 묶음 → 본문 맨 앞으로
+                multi_line = len(detect_line_runs(tpage, b)) >= 2
+                if label == "subtitle" and ((not seen_body and ci > 0) or (seen_body and multi_line)):
                     front.append(FlowItem("block", b, label=label, note="본문 앞으로 옮긴 부제"))
                     continue
                 flow.append(FlowItem("block", b, label=label, note=note))
