@@ -51,9 +51,17 @@ def title_atoms(page: Page, rect: Rect) -> tuple[list[TitleAtom], int]:
         band = Rect(rect.x0, y0 - pad, rect.x1, y1 + pad)
         sub = page.ink[max(0, band.y0) : band.y1, band.x0 : band.x1]
         pieces = runs(sub.any(axis=0), min_gap=0)
+        def small_mark(a0, a1) -> bool:  # 쉼표·마침표·가운뎃점처럼 작은 조각
+            r = np.flatnonzero(sub[:, a0:a1].any(axis=1))
+            return bool(r.size) and (r[-1] - r[0] + 1) < 0.4 * char_h
+
         merged: list[list[int]] = []
         for a0, a1 in pieces:
-            if merged and a0 - merged[-1][1] <= max(1, 0.1 * char_h) and a1 - merged[-1][0] <= 1.15 * char_h:
+            # 문장부호 조각은 앞 글자에 붙이지 않는다 (끊을 자리를 찾을 수 있게)
+            if (
+                merged and a0 - merged[-1][1] <= max(1, 0.1 * char_h) and a1 - merged[-1][0] <= 1.15 * char_h
+                and not small_mark(a0, a1) and not small_mark(*merged[-1])
+            ):
                 merged[-1][1] = a1
             else:
                 merged.append([a0, a1])

@@ -55,11 +55,44 @@ def estimate_char_h(page: Page) -> int:
     return int(np.argmax(hist))
 
 
+def _grow_to_edges(mask: np.ndarray, b: Rect, limit: int) -> Rect:
+    """Push each side of a box outwards while the next row/column is still (mostly) filled."""
+    x0, y0, x1, y1 = b.x0, b.y0, b.x1, b.y1
+    H, W = mask.shape
+    for _ in range(limit):
+        moved = False
+        if y0 > 0 and mask[y0 - 1, x0:x1].mean() > 0.8:
+            y0 -= 1; moved = True
+        if y1 < H and mask[y1, x0:x1].mean() > 0.8:
+            y1 += 1; moved = True
+        if x0 > 0 and mask[y0:y1, x0 - 1].mean() > 0.8:
+            x0 -= 1; moved = True
+        if x1 < W and mask[y0:y1, x1].mean() > 0.8:
+            x1 += 1; moved = True
+        if not moved:
+            break
+    return Rect(x0, y0, x1, y1)
+
+
 def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
     g = page.gray
     mid = (g > 50) & (g < 195)
     tone = tone_mask(g, ch)
     cands: list[Rect] = [b for b in _boxes(tone) if b.w > 3 * ch and b.h > 3 * ch]
+    # 연한 바탕색을 깐 그래픽 상자(회색·연분홍 박스 등): 거의 모든 화소가 흰 종이보다 어두운 넓은 면
+    nonwhite = g < 245
+    tint = cv2.boxFilter(nonwhite.astype(np.float32), -1, (2 * ch | 1, 2 * ch | 1)) > 0.9
+    tint_boxes = []
+    for b in _boxes(tint):
+        if b.w > 6 * ch and b.h > 4 * ch and float(tint[b.y0 : b.y1, b.x0 : b.x1].mean()) > 0.6:
+            b = _grow_to_edges(nonwhite, b, 2 * ch)
+            # 바탕색 상자는 한 가지 연한 색이 넓게 깔려 있다 (사진에는 이런 평평한 색이 드물다)
+            hist = np.bincount(g[b.y0 : b.y1, b.x0 : b.x1].ravel(), minlength=256)
+            peak = int(np.argmax(hist[200:245])) + 200
+            flat = hist[peak - 2 : peak + 3].sum() / max(1, b.w * b.h)
+            if flat > 0.25:
+                tint_boxes.append(b)
+            cands.append(b)
     # Big connected line work (chart frames, axes, boxes) without much tone.
     # (페이지 테두리·긴 괘선처럼 지면 대부분을 두르는 선은 제외)
     cands += [
@@ -78,7 +111,10 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
         textured = float((sd > 2.5).mean()) if midmask.any() else 0.0
         strong = float((sd > 6).mean()) if midmask.any() else 0.0
         fill = float(silhouette(tone[sl], ch).mean())
-        if midfrac > 0.2 and textured > 0.5 and fill < 0.8:
+        tinted = sum(t.overlaps_x(m) * t.overlaps_y(m) for t in tint_boxes) > 0.4 * m.w * m.h
+        if tinted:
+            kind = "graphic"  # 바탕색 상자 안의 도표·그래픽 (안에 사진이 있어도 그래픽)
+        elif midfrac > 0.2 and textured > 0.5 and fill < 0.8:
             kind = "portrait"  # 직사각형을 채우지 않는 연속 계조 = 윤곽(누끼) 인물사진
         elif midfrac > 0.2 and strong > 0.75:
             kind = "photo"
