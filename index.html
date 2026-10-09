@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+</head>
+<body>
+<title>지면 3단 편집기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap">
+<style>
+/* Layout: a proof desk — controls and the proofing checklist in a narrow left rail, the edited page large on the right. */
+:root {
+  --paper: #f3f4f1;        /* page ground, slightly cool newsprint */
+  --sheet: #ffffff;        /* surfaces that hold the clipping */
+  --ink: #1b1d1f;
+  --muted: #5d6266;
+  --rule: #d6d9d4;
+  --blue: #1d57b8;         /* proofreader's blue pencil */
+  --blue-soft: #e3ebf8;
+  --ok: #1d7a46;
+  --ok-soft: #e1f2e7;
+  --warn: #9a5b00;
+  --warn-soft: #fbefd9;
+  --bad: #b3261e;
+  --bad-soft: #fbe3e1;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --step: 1rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #15171a; --sheet: #1e2125; --ink: #e8eaec; --muted: #a2a8ae; --rule: #33383d;
+    --blue: #7aa7f0; --blue-soft: #1e2b40; --ok: #6fcf98; --ok-soft: #173225;
+    --warn: #e9b35d; --warn-soft: #382a12; --bad: #f08a83; --bad-soft: #3d1c1a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #15171a; --sheet: #1e2125; --ink: #e8eaec; --muted: #a2a8ae; --rule: #33383d;
+  --blue: #7aa7f0; --blue-soft: #1e2b40; --ok: #6fcf98; --ok-soft: #173225;
+  --warn: #e9b35d; --warn-soft: #382a12; --bad: #f08a83; --bad-soft: #3d1c1a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--paper); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 48px; display: grid; gap: 20px; }
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; border-bottom: 2px solid var(--ink); padding-bottom: 10px; }
+header.top h1 { margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.01em; text-wrap: balance; }
+header.top p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+.desk { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 860px) { .desk { grid-template-columns: minmax(0, 1fr); } }
+.rail { display: grid; gap: 16px; min-width: 0; }
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.panel h2 { margin: 0; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); }
+.drop { border: 2px dashed var(--rule); border-radius: 6px; padding: 18px 12px; text-align: center; display: grid; gap: 8px; justify-items: center; cursor: pointer; background: var(--paper); }
+.drop.over { border-color: var(--blue); background: var(--blue-soft); }
+.drop strong { font-size: 1rem; }
+.drop span { color: var(--muted); font-size: 0.86rem; }
+button { font: inherit; cursor: pointer; border-radius: 5px; border: 1px solid var(--rule); background: var(--sheet); color: var(--ink); padding: 7px 12px; }
+button:hover:not(:disabled) { border-color: var(--blue); }
+button:focus-visible, .drop:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+button.primary { background: var(--blue); border-color: var(--blue); color: var(--sheet); font-weight: 500; }
+button:disabled { opacity: 0.5; cursor: default; }
+.status { display: flex; gap: 10px; align-items: flex-start; font-size: 0.9rem; }
+.status .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 7px; flex: none; background: var(--muted); }
+.status.busy .dot { background: var(--blue); animation: pulse 1.1s ease-in-out infinite; }
+.status.done .dot { background: var(--ok); }
+.status.fail .dot { background: var(--bad); }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .status.busy .dot { animation: none; } }
+.checks { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.checks li { display: flex; justify-content: space-between; gap: 10px; font-size: 0.9rem; border-bottom: 1px dotted var(--rule); padding-bottom: 4px; }
+.checks li b { font-family: var(--font-mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+.pill { display: inline-block; font-size: 0.8rem; font-weight: 700; padding: 2px 9px; border-radius: 99px; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.ex { background: var(--warn-soft); color: var(--warn); }
+.saves { display: grid; gap: 8px; }
+.saves button { text-align: left; }
+.note { color: var(--muted); font-size: 0.84rem; margin: 0; }
+.stage { display: grid; gap: 12px; min-width: 0; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--sheet); border-color: var(--ink); }
+.tabs .pill { margin-left: auto; }
+.viewer { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; min-width: 0; }
+.viewer img { display: block; margin: 0 auto; max-width: 100%; height: auto; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+.report { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 18px 14px; min-width: 0; overflow-wrap: anywhere; }
+.report h1 { font-size: 1.1rem; margin: 14px 0 6px; }
+.report h2 { font-size: 0.95rem; margin: 16px 0 6px; border-top: 1px solid var(--rule); padding-top: 12px; }
+.report ul { margin: 0; padding-left: 1.2em; }
+.report li { margin: 2px 0; font-size: 0.9rem; }
+.report code { font-family: var(--font-mono); font-size: 0.85em; }
+.joins { display: grid; gap: 8px; }
+.join { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; border: 1px solid var(--rule); border-radius: 5px; padding: 6px 8px; background: var(--paper); }
+.join img { max-width: 100%; height: 26px; width: auto; object-fit: contain; background: #fff; border-radius: 2px; }
+.join .l { justify-self: end; }
+.join .seg { display: flex; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+.join .seg button { border: 0; border-radius: 0; padding: 4px 9px; font-size: 0.82rem; }
+.join .seg button[aria-pressed="true"] { background: var(--blue); color: var(--sheet); }
+.join .id { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
+.err { color: var(--bad); background: var(--bad-soft); border-radius: 5px; padding: 8px 10px; font-size: 0.88rem; margin: 0; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>지면 3단 편집기</h1>
+    <p>지면 기사 이미지를 올리면 원본 글자를 오려 붙여 3단 기사로 다시 짭니다. 이미지는 이 브라우저 안에서만 처리됩니다.</p>
+  </header>
+
+  <div class="desk">
+    <aside class="rail">
+      <section class="panel" aria-labelledby="h-up">
+        <h2 id="h-up">1. 지면 올리기</h2>
+        <label class="drop" id="drop" tabindex="0">
+          <strong>지면 이미지를 끌어다 놓기</strong>
+          <span>또는 눌러서 파일 고르기 (jpg, png)</span>
+          <input id="file" type="file" accept="image/*" hidden>
+        </label>
+        <button id="try-sample" type="button">예시 지면으로 해보기</button>
+        <div class="status" id="status"><span class="dot"></span><span id="status-text">프로그램을 준비하는 중</span></div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-chk">
+        <h2 id="h-chk">2. 검증</h2>
+        <ul class="checks" id="checks">
+          <li><span>판정</span><span class="pill ex" id="verdict">예시</span></li>
+          <li><span>원본 본문 줄</span><b id="c-lines">74</b></li>
+          <li><span>글자 누락 · 중복</span><b id="c-md">0 · 0</b></li>
+          <li><span>뺀 사진</span><b id="c-removed">1</b></li>
+          <li><span>다시 짠 문단</span><b id="c-repacked">2</b></li>
+        </ul>
+      </section>
+
+      <section class="panel" aria-labelledby="h-join" id="join-panel" hidden>
+        <h2 id="h-join">3. 줄 이음 띄어쓰기 확인</h2>
+        <p class="note">다시 짠 문단에서 원본 줄 끝과 다음 줄 첫 글자를 이은 자리입니다. 원본에서 단어가 끝났으면 '띄움', 단어 중간이면 '붙임'을 고르세요.</p>
+        <div class="joins" id="joins"></div>
+        <button class="primary" id="rebuild" type="button" disabled>바꾼 띄어쓰기로 다시 짜기</button>
+      </section>
+
+      <section class="panel" aria-labelledby="h-save">
+        <h2 id="h-save">4. 저장</h2>
+        <div class="saves">
+          <button id="save-jpg" type="button" disabled>편집 이미지 저장 (jpg)</button>
+          <button id="save-md" type="button" disabled>보고서 저장 (md)</button>
+          <button id="save-json" type="button" disabled>레이아웃 저장 (json)</button>
+        </div>
+        <p class="note" id="save-note">지면을 처리하면 저장할 수 있습니다. 파일은 브라우저의 다운로드 폴더에 저장됩니다.</p>
+      </section>
+    </aside>
+
+    <main class="stage">
+      <div class="tabs" role="tablist" aria-label="보기">
+        <button role="tab" id="t-result" aria-selected="true" type="button">3단 편집본</button>
+        <button role="tab" id="t-annot" aria-selected="false" type="button">다시 짠 줄 표시</button>
+        <button role="tab" id="t-detect" aria-selected="false" type="button">감지한 영역</button>
+        <button role="tab" id="t-orig" aria-selected="false" type="button">원본</button>
+        <span class="pill ex" id="ex-badge">예시 지면 결과</span>
+      </div>
+      <div class="viewer"><img id="view" src="example/sample_3col.jpg" alt="3단 편집본"></div>
+      <article class="report" id="report">
+        <h1>보고서</h1>
+        <ul><li>예시 지면(테스트용으로 만든 가짜 기사)을 3단으로 편집한 결과입니다. 왼쪽에서 실제 지면 이미지를 올려 보세요.</li></ul>
+      </article>
+    </main>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const state = { images: { result: "example/sample_3col.jpg", orig: "example/sample.jpg" }, tab: "result",
+                  out: null, name: "page", joins: {}, busy: false, ready: false, urls: [] };
+  const worker = new Worker("worker.js");
+
+  function setStatus(text, mode) {
+    $("status").className = "status " + (mode || "");
+    $("status-text").textContent = text;
+  }
+  function setBusy(b) {
+    state.busy = b;
+    $("try-sample").disabled = b || !state.ready;
+    $("rebuild").disabled = b || !state.out || !Object.keys(state.joins).length;
+  }
+  function blobUrl(bytes, type) {
+    const u = URL.createObjectURL(new Blob([bytes], { type }));
+    state.urls.push(u);
+    return u;
+  }
+  function showTab(name) {
+    state.tab = name;
+    for (const [id, key] of [["t-result", "result"], ["t-annot", "annotated"], ["t-detect", "detect"], ["t-orig", "orig"]]) {
+      $(id).setAttribute("aria-selected", String(key === name));
+      $(id).disabled = !state.images[key];
+    }
+    $("view").src = state.images[name] || state.images.result;
+  }
+  $("t-result").onclick = () => showTab("result");
+  $("t-annot").onclick = () => showTab("annotated");
+  $("t-detect").onclick = () => showTab("detect");
+  $("t-orig").onclick = () => showTab("orig");
+  showTab("result");
+
+  function renderReport(md) {
+    const root = $("report");
+    root.replaceChildren();
+    let list = null;
+    const inline = (el, text) => {
+      // **굵게** 와 `코드` 만 처리
+      const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/);
+      for (const p of parts) {
+        if (p.startsWith("**") && p.endsWith("**")) { const b = document.createElement("b"); b.textContent = p.slice(2, -2); el.append(b); }
+        else if (p.startsWith("`") && p.endsWith("`")) { const c = document.createElement("code"); c.textContent = p.slice(1, -1); el.append(c); }
+        else el.append(p);
+      }
+    };
+    for (const line of md.split("\n")) {
+      if (!line.trim()) { list = null; continue; }
+      const h = line.match(/^(#{1,2}) (.*)/);
+      if (h) { list = null; const e = document.createElement(h[1].length === 1 ? "h1" : "h2"); inline(e, h[2]); root.append(e); continue; }
+      const li = line.match(/^(\s*)- (.*)/);
+      if (li) {
+        if (!list) { list = document.createElement("ul"); root.append(list); }
+        const e = document.createElement("li");
+        if (li[1].length) e.style.marginLeft = "1.2em";
+        inline(e, li[2]); list.append(e); continue;
+      }
+      const p = document.createElement("p"); inline(p, line); root.append(p); list = null;
+    }
+  }
+
+  function renderJoins(joins) {
+    const box = $("joins");
+    box.replaceChildren();
+    $("join-panel").hidden = !joins.length;
+    for (const j of joins) {
+      if (!(j.line in state.joins)) state.joins[j.line] = j.space;
+      const row = document.createElement("div");
+      row.className = "join";
+      const l = document.createElement("img"); l.className = "l"; l.alt = j.line + " 줄 끝"; l.src = blobUrl(j.left, "image/png");
+      const r = document.createElement("img"); r.alt = j.next + " 줄 시작"; r.src = blobUrl(j.right, "image/png");
+      const seg = document.createElement("div"); seg.className = "seg";
+      for (const [label, val] of [["붙임", false], ["띄움", true]]) {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+        b.setAttribute("aria-pressed", String(state.joins[j.line] === val));
+        b.onclick = () => {
+          state.joins[j.line] = val;
+          for (const x of seg.children) x.setAttribute("aria-pressed", String(x === b));
+          $("rebuild").disabled = state.busy;
+        };
+        seg.append(b);
+      }
+      const id = document.createElement("span"); id.className = "id"; id.textContent = j.line + " → " + j.next;
+      row.append(l, seg, r, id);
+      box.append(row);
+    }
+  }
+
+  function showResult(out, fresh) {
+    for (const u of state.urls) URL.revokeObjectURL(u);
+    state.urls = [];
+    state.out = out;
+    state.images.result = blobUrl(out.result, "image/jpeg");
+    state.images.annotated = blobUrl(out.annotated, "image/jpeg");
+    if (out.detect) state.detectBytes = out.detect;
+    if (state.detectBytes) state.images.detect = blobUrl(state.detectBytes, "image/jpeg");
+    if (state.origBytes) state.images.orig = blobUrl(state.origBytes, state.origType);
+    $("ex-badge").hidden = true;
+    const s = out.summary;
+    const v = $("verdict");
+    v.className = "pill " + (out.ok ? "ok" : "bad");
+    v.textContent = out.ok ? "통과" : "확인 필요";
+    $("c-lines").textContent = s.lines;
+    $("c-md").textContent = s.missing + " · " + s.duplicated;
+    $("c-removed").textContent = s.removed;
+    $("c-repacked").textContent = s.repacked;
+    renderReport(out.report_md);
+    if (fresh) state.joins = {};
+    renderJoins(out.joins);
+    showTab(state.tab === "orig" || state.tab === "detect" ? state.tab : "result");
+    for (const id of ["save-jpg", "save-md", "save-json"]) $(id).disabled = false;
+  }
+
+  worker.onmessage = (ev) => {
+    const m = ev.data;
+    if (m.type === "status") setStatus(m.text, "busy");
+    else if (m.type === "ready") { state.ready = true; setStatus("준비됐습니다. 지면 이미지를 올려 주세요.", "done"); setBusy(false); }
+    else if (m.type === "result") {
+      setBusy(false);
+      showResult(m.data, m.kind === "process");
+      setStatus(m.data.ok ? "다 짰습니다. 검증을 통과했습니다." : "다 짰습니다. 검증 결과를 확인해 주세요.", m.data.ok ? "done" : "fail");
+    } else if (m.type === "error") {
+      setBusy(false);
+      setStatus("처리하지 못했습니다: " + m.message + " — 다른 이미지로 해 보거나, 이 메시지를 알려 주세요.", "fail");
+    }
+  };
+  worker.onerror = (e) => { setStatus("프로그램을 불러오지 못했습니다: " + (e.message || "알 수 없는 오류"), "fail"); };
+  setBusy(true);
+  worker.postMessage({ type: "init" });
+
+  async function run(file, name) {
+    if (state.busy) return;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    state.origBytes = buf.slice(0);
+    state.origType = file.type || "image/jpeg";
+    state.detectBytes = null;
+    state.name = (name || "page").replace(/\.[^.]+$/, "");
+    setBusy(true);
+    setStatus(state.ready ? "지면을 분석하고 3단으로 짜는 중 (보통 10~40초)" : "프로그램 준비가 끝나면 바로 시작합니다", "busy");
+    worker.postMessage({ type: "process", bytes: buf, name: name || "page.jpg" }, [buf.buffer]);
+  }
+
+  const drop = $("drop"), input = $("file");
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+  input.addEventListener("change", () => { if (input.files[0]) run(input.files[0], input.files[0].name); input.value = ""; });
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault(); drop.classList.remove("over");
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f && f.type.startsWith("image/")) run(f, f.name);
+    else setStatus("이미지 파일(jpg, png)만 올릴 수 있습니다.", "fail");
+  });
+  $("try-sample").onclick = async () => {
+    const res = await fetch("example/sample.jpg");
+    run(await res.blob(), "예시지면.jpg");
+  };
+  $("rebuild").onclick = () => {
+    if (state.busy || !state.out) return;
+    setBusy(true);
+    worker.postMessage({ type: "rebuild", joins: { ...state.joins } });
+  };
+
+  // 저장: 일반 웹페이지에서는 브라우저 다운로드로 저장한다
+  async function save(filename, data) {
+    const blob = data instanceof Blob ? data : new Blob([data], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    $("save-note").textContent = filename + " 파일을 내려받았습니다.";
+  }
+  $("save-jpg").onclick = () => state.out && save(state.name + "_3단.jpg", new Blob([state.out.result], { type: "image/jpeg" }));
+  $("save-md").onclick = () => state.out && save(state.name + "_보고서.md", state.out.report_md);
+  $("save-json").onclick = () => state.out && save(state.name + "_레이아웃.json", state.out.layout_json);
+})();
+</script>
+
+</body>
+</html>
