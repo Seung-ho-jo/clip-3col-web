@@ -33,6 +33,7 @@ class Options:
     gutter: float = 1.5  # 단 사이 간격 (본문 글자 높이 배수)
     margin: float = 2.0
     rule: bool = True
+    wide_ratio: float = 2.0  # 원래 폭이 단 폭의 이 배수 이상인 그림은 3단 아래 전체 폭으로
     join_default: str = "punct"  # 다시 짠 문단의 줄 이음: punct(문장부호 뒤만 띄움) | space | none
 
 
@@ -317,10 +318,13 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         "notes": [],
     }
 
+    bottom: list[Item] = []
+
     def make_items(include_photos: bool) -> tuple[list[Item], list[Item], list[Item]]:
         items: list[Item] = []
         top_blocks: list[Item] = []
         pre_title: list[Item] = []
+        bottom.clear()
         emitted: set[int] = set()
         seen_text = False
         for i, f in enumerate(flow):
@@ -358,6 +362,10 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 if f.kind == "portrait":
                     continue
                 if f.kind == "photo" and not include_photos:
+                    continue
+                if r.w >= opt.wide_ratio * cw:
+                    # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
+                    bottom.append(Item("image", src.crop_rgb(r), [f"I{i}"], label=f.kind))
                     continue
                 img, scaled = _fit_width(src.crop_rgb(r), cw)
                 if scaled and include_photos and r.w > 1.6 * cw:
@@ -426,6 +434,11 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             y += img.shape[0] + m.pitch // 2
         body_y = y
         y += body_h
+        for b in bottom:
+            img, s_ = _fit_width(b.img, W - 2 * margin)
+            y += m.pitch
+            layout_plan.append(("bottom:" + b.label, img, (W - img.shape[1]) // 2, y))
+            y += img.shape[0]
         if footer is not None:
             y += m.pitch
             fx = margin
@@ -469,6 +482,11 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             placements.append(Placement(it, x, y, ci))
             y += it.h
 
+    for b in bottom:
+        scale = min(1.0, (W - 2 * margin) / b.img.shape[1])
+        report["notes"].append(
+            f"넓은 {b.label}({b.ids[0]})은 3단 본문 아래에 전체 폭으로 배치 ({scale:.0%} 크기)"
+        )
     report["layout"] = {
         "width": W, "height": H, "column_width": cw, "gutter": gutter, "columns": opt.columns,
         "column_heights": [sum(it.h for it in c) for c in cols],
