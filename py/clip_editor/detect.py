@@ -111,9 +111,12 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
         textured = float((sd > 2.5).mean()) if midmask.any() else 0.0
         strong = float((sd > 6).mean()) if midmask.any() else 0.0
         fill = float(silhouette(tone[sl], ch).mean())
-        tinted = sum(t.overlaps_x(m) * t.overlaps_y(m) for t in tint_boxes) > 0.4 * m.w * m.h
+        # 바탕색 상자가 이 그림 영역과 거의 같은 크기일 때만 그래픽 상자 (사진 안의 밝은 벽면 조각은 제외)
+        tinted = any(
+            t.overlaps_x(m) * t.overlaps_y(m) > 0.6 * max(m.w * m.h, t.w * t.h) for t in tint_boxes
+        )
         if tinted:
-            kind = "graphic"  # 바탕색 상자 안의 도표·그래픽 (안에 사진이 있어도 그래픽)
+            kind = "box-graphic"  # 바탕색 상자 안의 도표·그래픽 (안에 사진이 있어도 그래픽)
         elif midfrac > 0.2 and textured > 0.5 and fill < 0.8:
             kind = "portrait"  # 직사각형을 채우지 않는 연속 계조 = 윤곽(누끼) 인물사진
         elif midfrac > 0.2 and strong > 0.75:
@@ -304,7 +307,15 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
         r = Rect(r.x0, max(r.y0, zone.y0), r.x1, min(r.y1, zone.y1))
         if kind == "portrait" and is_rectangular(page.gray, r):
             kind = "photo"
-        images.append((attach_caption(page.ink, r, ch) if kind != "portrait" else r, kind))
+        rc = attach_caption(page.ink, r, ch) if kind != "portrait" else r
+        if kind == "graphic" and rc.y1 > r.y1:
+            # 아래에 사진 설명이 붙은 연속 계조 그림은 사진이다 (도표는 출처를 상자 안에 둔다)
+            g_ = page.gray[r.y0 : r.y1, r.x0 : r.x1]
+            if float(((g_ > 50) & (g_ < 195)).mean()) > 0.3:
+                kind = "photo"
+        if kind == "box-graphic":
+            kind = "graphic"
+        images.append((rc, kind))
 
     ink = page.ink & ~rule_mask(page.ink, ch)
     ink[: zone.y0] = False
@@ -428,6 +439,22 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
         if info[b]["n"] < 5 and b.w < 0.75 * col_w:
             body.remove(b)
             other.append(b)
+
+    # 도표 제목처럼 '그 밖의' 블록 바로 위에 붙은 짧은 본문 조각(3줄 이하)은 그 블록의 일부다
+    for b in sorted(list(body), key=lambda r: r.y0):
+        if info[b]["n"] > 3:
+            continue
+        below = [
+            o for o in other
+            if o.overlaps_x(b) > 0.5 * min(o.w, b.w) and 0 <= o.y0 - b.y1 < 1.5 * ch and o.h > 4 * ch
+        ]
+        if below:
+            o = below[0]
+            u = _union(o, b)
+            info[u] = block_info(tpage, u)
+            other.remove(o)
+            other.append(u)
+            body.remove(b)
 
     # 같은 줄에 나란히 놓인 한 줄짜리 조각(단 사이에서 잘린 시리즈 바 등)은 다시 붙인다
     changed = True
