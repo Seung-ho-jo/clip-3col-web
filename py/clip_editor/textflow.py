@@ -56,6 +56,7 @@ class Region:
     text_left: int = 0
     text_right: int = 0
     lines: list[Line] = field(default_factory=list)
+    slice: bool = False  # 옆 그림 조각과 함께 원본 단을 통째로 오려 붙인다 (줄을 다시 짜지 않음)
 
     @property
     def text_w(self) -> int:
@@ -323,11 +324,12 @@ def paragraphs(flow, regions: list[Region]) -> list[Paragraph]:
         if item.type == "text" and i in by_index:
             stream.extend(by_index[i].lines)
     groups: list[list[Line]] = []
+    sliced = {l.id for r in regions if r.slice for l in r.lines}
     for k, l in enumerate(stream):
         if not groups or l.indent:
             groups.append([])
         groups[-1].append(l)
-        if l.short and k + 1 < len(stream) and not stream[k + 1].indent:
+        if l.short and k + 1 < len(stream) and not stream[k + 1].indent and l.id not in sliced:
             near_wrap = (k > 0 and stream[k - 1].wrap) or stream[k + 1].wrap
             if near_wrap:
                 l.wrap = True

@@ -30,6 +30,7 @@ class Options:
     columns: int = 3
     title_area_ratio: float = 7.0  # 제목 글자 면적 / 본문 글자 면적
     max_height_ratio: float = 2.0  # 편집본 세로/가로 가 이 값을 넘으면 일반 사진을 뺀다
+    max_graphic_ratio: float = 3.0  # 도표를 넣어도 이 값을 넘으면 가장 큰 도표부터 뺀다
     gutter: float = 1.5  # 단 사이 간격 (본문 글자 높이 배수)
     margin: float = 2.0
     rule: bool = True
@@ -45,6 +46,7 @@ class Item:
     label: str = ""
     para: int | None = None
     pad: int = 0  # paper rows above/below inside img
+    textmask: np.ndarray | None = None  # slice: which pixels are body-text ink (for verification)
 
     @property
     def h(self) -> int:
@@ -116,7 +118,7 @@ def _fit_width(img: np.ndarray, width: int) -> tuple[np.ndarray, bool]:
 def float_to_boundaries(items: list[Item]) -> list[Item]:
     """Blocks and images that sit inside a paragraph (사이드바·도표 등) move to the end of that paragraph,
     so that no sentence is interrupted by them."""
-    texty = lambda it: it.kind in ("line", "packed")  # noqa: E731
+    texty = lambda it: it.kind in ("line", "packed", "slice")  # noqa: E731
     out = list(items)
     k = 0
     while k < len(out):
@@ -136,15 +138,18 @@ def float_to_boundaries(items: list[Item]) -> list[Item]:
     return out
 
 
-def pack_columns(items: list[Item], n: int) -> list[list[Item]]:
+def pack_columns(items: list[Item], n: int, reserve: list[int] | None = None) -> list[list[Item]]:
+    """reserve[k]: 그 단 아래에 비워 둘 높이 (단 2개 폭 도표 자리)."""
     if not items:
         return [[] for _ in range(n)]
+    reserve = reserve or [0] * n
 
     def fill(limit: int) -> list[list[Item]] | None:
         cols: list[list[Item]] = [[]]
         h = 0
         for it in items:
-            if cols[-1] and h + it.h > limit:
+            cap = limit - reserve[min(len(cols) - 1, n - 1)]
+            if cols[-1] and h + it.h > cap:
                 cols.append([])
                 h = 0
             cols[-1].append(it)
@@ -152,7 +157,7 @@ def pack_columns(items: list[Item], n: int) -> list[list[Item]]:
         return cols if len(cols) <= n else None
 
     lo = max(it.h for it in items)
-    hi = sum(it.h for it in items)
+    hi = sum(it.h for it in items) + max(reserve)
     while lo < hi:
         mid = (lo + hi) // 2
         if fill(mid):
@@ -163,7 +168,7 @@ def pack_columns(items: list[Item], n: int) -> list[list[Item]]:
     cols += [[] for _ in range(n - len(cols))]
     # 단 끝 문장이 다음 단 첫 줄로 곧바로 이어지고 문장 중간이 끊기지 않도록, 그림·블록을
     # 같은 단 안의 가장 가까운 문단 경계로 옮긴다 (단 맨 위·맨 아래는 문장이 이어지는 자리라 피함).
-    texty = lambda it: it.kind in ("line", "packed")  # noqa: E731
+    texty = lambda it: it.kind in ("line", "packed", "slice")  # noqa: E731
     for ci, col in enumerate(cols):
         later = any(cols[k] for k in range(ci + 1, n))
         for it in [x for x in col if not texty(x)]:
@@ -262,6 +267,16 @@ def analyze(layout: Layout) -> Analysis:
     regions = build_regions(page, flow)
     m = estimate_metrics(regions, layout.column_width)
     mark_wrap(regions, m, flow)
+    # 사진 때문에 짧아진 줄 옆에 넣을 그림(인물 윤곽 사진이 아닌 것)이 있으면, 그 단을 그림 조각째 오린다.
+    kept = [page.clip(f.rect) for f in flow if f.type == "image" and f.kind != "portrait"]
+    for r in regions:
+        if not r.wrap or not r.lines:
+            continue
+        colr = Rect(r.text_left, r.lines[0].ink.y0, r.text_left + m.column_width, r.lines[-1].ink.y1)
+        if any(k.overlaps_x(colr) > m.char_h and k.overlaps_y(colr) > m.char_h for k in kept):
+            r.slice, r.wrap = True, False
+            for l in r.lines:
+                l.wrap = False
     assign_bands(regions, m)
     segment_atoms(page, regions, m)
     fix_indent_beside_images(regions, img_mask, m)
@@ -329,8 +344,47 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
     }
 
     bottom: list[Item] = []
+    removed_now: list = []
+    dropped: set[int] = set()  # 너무 커서 뺀 도표 (flow index)
+
+    def attached_to_graphic(r: Rect) -> bool:
+        d = max(3, m.char_h // 2)
+        for g in flow:
+            if g.type != "image" or g.kind != "graphic":
+                continue
+            q = page.clip(g.rect)
+            near_x = q.x0 - d <= r.x1 and r.x0 <= q.x1 + d
+            near_y = q.y0 - d <= r.y1 and r.y0 <= q.y1 + d
+            if near_x and near_y and (q.overlaps_x(r) > m.char_h or q.overlaps_y(r) > m.char_h):
+                return True
+        return False
+
+    def trim_photo_edge(img: np.ndarray, avail: int):
+        """Cut a photo off the left/right edge of a graphic box so the rest fits `avail` px."""
+        g = np.asarray(Image.fromarray(img).convert("L")).astype(np.int16)
+        h, w = g.shape
+        bg = int(np.bincount(g[:, : max(1, w // 20)].ravel()).argmax())
+        flat = (np.abs(g - bg) <= 4).mean(axis=0)  # 열마다 바탕색 비율
+        midt = ((g > 50) & (g < 195)).mean(axis=0)
+        best = None
+        # 오른쪽을 잘라내는 경우: 자르는 자리는 바탕색만 있는 열, 잘려 나가는 쪽은 사진(중간 톤이 많음)
+        for x in range(min(avail, w - 1), w // 2, -1):
+            if flat[x] > 0.97 and midt[x:].mean() > 0.25:
+                best = img[:, :x]
+                break
+        if best is None:
+            for x in range(max(0, w - avail), w // 2):
+                if flat[x] > 0.97 and midt[:x].mean() > 0.25:
+                    best = img[:, x:]
+                    break
+        return best
+
     text_rects = [page.clip(f.rect) for f in flow if f.type == "text"]
 
+    def slice_rect(reg) -> Rect:
+        return Rect(reg.text_left, reg.lines[0].band.y0, reg.text_left + cw, reg.lines[-1].band.y1)
+
+    slice_rects = [slice_rect(r) for r in regions if r.slice]
     silh = getattr(an, "silhouettes", {})
     image_items = [f for f in flow if f.type == "image" and f.kind != "portrait"]
 
@@ -345,6 +399,10 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             x0, y0, x1, y1 = max(r.x0, t.x0), max(r.y0, t.y0), min(r.x1, t.x1), min(r.y1, t.y1)
             if x1 > x0 and y1 > y0:
                 erase[y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0] |= page.ink[y0:y1, x0:x1]
+        for t in slice_rects:  # 단째 오려 붙인 부분은 그림에서 뺀다
+            x0, y0, x1, y1 = max(r.x0, t.x0), max(r.y0, t.y0), min(r.x1, t.x1), min(r.y1, t.y1)
+            if x1 > x0 and y1 > y0:
+                erase[y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0] = True
         # 원본에서 겹쳐 있던 다른 그림의 조각은 지운다 (윤곽 그림은 그 윤곽만, 나머지는 상자째)
         mine = silh.get(id(item)) if item is not None else None
         for o in image_items:
@@ -372,12 +430,23 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         top_blocks: list[Item] = []
         pre_title: list[Item] = []
         bottom.clear()
+        removed_now.clear()
         emitted: set[int] = set()
         seen_text = False
         for i, f in enumerate(flow):
             if f.type in ("block", "image") and f.kind != "portrait" and layout.title and f.rect.y1 <= layout.title.y0:
                 # 제목 위에 있던 요소(그래픽 띠 등)는 제목 위에 그대로 둔다
                 pre_title.append(Item(f.type, src.crop_rgb(page.clip(f.rect)), [f"{'B' if f.type == 'block' else 'I'}{i}"], label=f.label or f.kind))
+                continue
+            if f.type == "text" and i in by_index and by_index[i].slice:
+                reg = by_index[i]
+                sr = slice_rect(reg)
+                textmask = page.ink[sr.y0 : sr.y1, sr.x0 : sr.x1].copy()
+                items.append(
+                    Item("slice", src.crop_rgb(sr), [l.id for l in reg.lines],
+                         para=para_of[reg.lines[-1].id].index, textmask=textmask)
+                )
+                seen_text = True
                 continue
             if f.type == "text" and i in by_index:
                 for l in by_index[i].lines:
@@ -410,7 +479,17 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                     continue
                 if f.kind == "photo" and not include_photos:
                     continue
+                if f.kind == "photo" and attached_to_graphic(r):
+                    removed_now.append((i, f, "도표·그래픽에 붙어 있는 사진 (도표만 살림)"))
+                    continue
+                if i in dropped:
+                    continue
                 crop = image_crop(r, f)
+                if crop.shape[1] > W - 2 * margin and f.kind == "graphic":
+                    trimmed = trim_photo_edge(crop, W - 2 * margin)
+                    if trimmed is not None:
+                        report["notes"].append(f"graphic(flow[{i}]) 가장자리의 사진 부분을 잘라 3단 폭에 맞춤")
+                        crop = trimmed
                 if r.w >= opt.wide_ratio * cw:
                     # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
                     bottom.append(Item("image", crop, [f"I{i}"], label=f.kind))
@@ -448,8 +527,14 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
 
     def assemble(include_photos: bool):
         items, top_blocks, pre_title = make_items(include_photos)
-        cols = pack_columns(items, opt.columns)
-        body_h = max((sum(it.h for it in c) for c in cols), default=0)
+        # 단 2개 폭 그림은 마지막 두 단 아래에 자리를 미리 비워 두고 글을 흘린다 (첫 단이 가장 길어짐)
+        two_ = 2 * cw + gutter
+        res = [0] * opt.columns
+        for b in bottom:
+            if b.img.shape[1] <= two_ and opt.columns >= 2:
+                for k in range(opt.columns - 2, opt.columns):
+                    res[k] += b.img.shape[0] + m.pitch // 2
+        cols = pack_columns(items, opt.columns, res)
         y = margin
         layout_plan: list[tuple[str, np.ndarray, int, int]] = []
         if header is not None:
@@ -481,12 +566,23 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             layout_plan.append(("topblock:" + b.label, img, margin, y))
             y += img.shape[0] + m.pitch // 2
         body_y = y
-        y += body_h
+        bottoms = [body_y + sum(it.h for it in c) for c in cols]
+        two = 2 * cw + gutter
         for b in bottom:
-            img, s_ = _fit_width(b.img, W - 2 * margin)
-            y += m.pitch
-            layout_plan.append(("bottom:" + b.label, img, (W - img.shape[1]) // 2, y))
-            y += img.shape[0]
+            img = b.img
+            if img.shape[1] <= two:
+                # 단 2개 폭에 들어가는 그림: 가장 일찍 끝나는 이웃한 두 단 아래 빈자리에
+                i0 = min(range(len(cols) - 1), key=lambda k: (max(bottoms[k], bottoms[k + 1]), -k))
+                yy = max(bottoms[i0], bottoms[i0 + 1]) + m.pitch // 2
+                x0 = margin + i0 * (cw + gutter) + (two - img.shape[1]) // 2
+                layout_plan.append(("bottom:" + b.label, img, x0, yy))
+                bottoms[i0] = bottoms[i0 + 1] = yy + img.shape[0]
+            else:
+                img, s_ = _fit_width(img, W - 2 * margin)
+                yy = max(bottoms) + m.pitch
+                layout_plan.append(("bottom:" + b.label, img, (W - img.shape[1]) // 2, yy))
+                bottoms = [yy + img.shape[0]] * len(cols)
+        y = max(bottoms)
         if footer is not None:
             y += m.pitch
             fx = margin
@@ -509,6 +605,19 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         state = assemble(False)
     elif has_photo:
         report["notes"].append(f"사진 포함 편집본 세로/가로 {state[5] / W:.2f} ≤ {opt.max_height_ratio} → 사진 유지")
+    # 도표도 너무 커서 편집본이 지나치게 길어지면 가장 큰 것부터 뺀다
+    photos_in = not any(r.get("kind") == "photo" and "길어짐" in r.get("reason", "") for r in report["removed"])
+    while state[5] / W > opt.max_graphic_ratio and bottom:
+        big = max(bottom, key=lambda b: b.img.shape[0])
+        idx = int(big.ids[0][1:])
+        dropped.add(idx)
+        report["removed"].append(
+            {"flow": idx, "kind": flow[idx].kind, "rect": flow[idx].rect.as_list(),
+             "reason": f"너무 큰 도표 — 넣으면 편집본 세로/가로 {state[5] / W:.2f} > {opt.max_graphic_ratio}"}
+        )
+        state = assemble(photos_in)
+    for i, f, why in removed_now:
+        report["removed"].append({"flow": i, "kind": f.kind, "rect": f.rect.as_list(), "reason": why})
     for i, f in enumerate(flow):
         if f.type == "image" and f.kind == "portrait":
             report["removed"].append({"flow": i, "kind": "portrait", "rect": f.rect.as_list(), "reason": "본문이 윤곽을 따라 감싼 인물사진"})
@@ -649,7 +758,7 @@ def verify(page: Page, regions, paras, placements: list[Placement], canvas: np.n
     repacked_atoms = {a.id for p in paras if p.repack for l in p.lines for a in l.atoms}
     count: dict[str, int] = {}
     for pl in placements:
-        if pl.item.kind in ("line", "packed"):
+        if pl.item.kind in ("line", "packed", "slice"):
             for i in pl.item.ids:
                 count[i] = count.get(i, 0) + 1
     missing, dup = [], []
@@ -675,9 +784,13 @@ def verify(page: Page, regions, paras, placements: list[Placement], canvas: np.n
         src_ink += int(page.ink[max(0, b.y0) : b.y1, b.x0 : b.x1].sum())
     out_ink = 0
     for pl in placements:
-        if pl.item.kind in ("line", "packed"):
+        if pl.item.kind in ("line", "packed", "slice"):
             strip = canvas[pl.y : pl.y + pl.item.h, pl.x : pl.x + pl.item.img.shape[1]]
-            out_ink += int(to_ink(strip, page.threshold).sum())
+            got = to_ink(strip, page.threshold)
+            if pl.item.textmask is not None:  # 그림 조각이 섞인 단: 본문 글자 자리만 센다
+                tm = pl.item.textmask[: got.shape[0], : got.shape[1]]
+                got = got[: tm.shape[0], : tm.shape[1]] & tm
+            out_ink += int(got.sum())
     # Ink inside text regions that no line band picked up (would mean a cut-off glyph).
     uncovered = 0
     for r in regions:
