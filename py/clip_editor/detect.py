@@ -74,6 +74,28 @@ def _grow_to_edges(mask: np.ndarray, b: Rect, limit: int) -> Rect:
     return Rect(x0, y0, x1, y1)
 
 
+def flat_frames(g: np.ndarray, ch: int) -> list[Rect]:
+    """Boxes with a flat light background: the background colour's connected region runs all
+    around the box border (사진은 테두리가 한 가지 색으로 고르게 이어지지 않는다)."""
+    hist = np.bincount(g.ravel(), minlength=256)
+    out: list[Rect] = []
+    paper = int(np.argmax(hist))  # 가장 흔한 색 = 종이 바탕 (상자 바탕이 아님)
+    peaks = [v for v in range(215, 249)
+             if abs(v - paper) > 4 and hist[v] > 0.003 * g.size and hist[v] == hist[max(0, v - 3) : v + 4].max()]
+    for v in peaks:
+        m = (np.abs(g.astype(np.int16) - v) <= 3).astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        for k in range(1, n):
+            x, y, w, h, area = st[k]
+            if w < 8 * ch or h < 5 * ch or area < 0.15 * w * h or w * h > 0.6 * g.size:
+                continue
+            comp = lab[y : y + h, x : x + w] == k
+            sides = [float(v.mean()) for v in (comp[:3], comp[-3:], comp[:, :3], comp[:, -3:])]
+            if sum(sides) / 4 > 0.7 and min(sides) > 0.5:
+                out.append(Rect(int(x), int(y), int(x + w), int(y + h)))
+    return out
+
+
 def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
     g = page.gray
     mid = (g > 50) & (g < 195)
@@ -93,6 +115,10 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
             if flat > 0.25:
                 tint_boxes.append(b)
             cands.append(b)
+    # 바탕색 상자 (2): 한 가지 연한 색이 상자 테두리를 빙 둘러 깔린 경우 (안에 사진·흰 칸이 많아도)
+    for b in flat_frames(g, ch):
+        tint_boxes.append(b)
+        cands.append(b)
     # Big connected line work (chart frames, axes, boxes) without much tone.
     # (페이지 테두리·긴 괘선처럼 지면 대부분을 두르는 선은 제외)
     cands += [

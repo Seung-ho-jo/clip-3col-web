@@ -360,24 +360,30 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         return False
 
     def trim_photo_edge(img: np.ndarray, avail: int):
-        """Cut a photo off the left/right edge of a graphic box so the rest fits `avail` px."""
-        g = np.asarray(Image.fromarray(img).convert("L")).astype(np.int16)
+        """Cut a photo off the left/right edge of a graphic box so the rest fits `avail` px.
+
+        사진 부분은 열마다 결(texture)이 촘촘하고, 도표·표 부분은 글자·선 사이로 평평한 바탕이 많다.
+        """
+        import cv2
+
+        g = np.asarray(Image.fromarray(img).convert("L")).astype(np.float32)
         h, w = g.shape
-        bg = int(np.bincount(g[:, : max(1, w // 20)].ravel()).argmax())
-        flat = (np.abs(g - bg) <= 4).mean(axis=0)  # 열마다 바탕색 비율
-        midt = ((g > 50) & (g < 195)).mean(axis=0)
-        best = None
-        # 오른쪽을 잘라내는 경우: 자르는 자리는 바탕색만 있는 열, 잘려 나가는 쪽은 사진(중간 톤이 많음)
-        for x in range(min(avail, w - 1), w // 2, -1):
-            if flat[x] > 0.97 and midt[x:].mean() > 0.25:
-                best = img[:, :x]
-                break
-        if best is None:
-            for x in range(max(0, w - avail), w // 2):
-                if flat[x] > 0.97 and midt[:x].mean() > 0.25:
-                    best = img[:, x:]
-                    break
-        return best
+        if w <= avail:
+            return img
+        sd = np.sqrt(np.maximum(cv2.blur(g * g, (7, 7)) - cv2.blur(g, (7, 7)) ** 2, 0))
+        tex = ((sd > 4) & (sd < 40)).mean(axis=0)
+        tex = np.convolve(tex, np.ones(15) / 15, mode="same")
+        tone = ((g > 50) & (g < 200)).mean(axis=0)  # 사진은 중간 톤이 넓게 깔린다 (표·글자는 아님)
+        # 오른쪽 가장자리가 사진인 경우
+        for xr in range(w // 2, int(0.85 * w)):
+            if (np.percentile(tex[xr : w - 8], 10) > 0.45 and tex[xr:].mean() > 0.6 and tex[:xr].mean() < 0.45
+                    and tone[xr:].mean() > 0.4):
+                return img[:, : min(avail, w)] if xr <= avail else None
+        for xl in range(w // 2, int(0.15 * w), -1):
+            if (np.percentile(tex[8:xl], 10) > 0.45 and tex[:xl].mean() > 0.6 and tex[xl:].mean() < 0.45
+                    and tone[:xl].mean() > 0.4):
+                return img[:, max(0, w - avail) :] if w - xl <= avail else None
+        return None
 
     text_rects = [page.clip(f.rect) for f in flow if f.type == "text"]
 
@@ -412,6 +418,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             x0, y0, x1, y1 = max(r.x0, orr.x0), max(r.y0, orr.y0), min(r.x1, orr.x1), min(r.y1, orr.y1)
             if x1 <= x0 or y1 <= y0:
                 continue
+            if orr.x0 <= r.x0 and orr.y0 <= r.y0 and orr.x1 >= r.x1 and orr.y1 >= r.y1 and id(o) not in silh:
+                continue  # 나를 통째로 품은 바탕 그림(트럭 그림 위의 표 등)은 지우지 않는다
             if id(o) in silh:
                 _, om = silh[id(o)]
                 erase[y0 - r.y0 : y1 - r.y0, x0 - r.x0 : x1 - r.x0] |= om[y0 - orr.y0 : y1 - orr.y0, x0 - orr.x0 : x1 - orr.x0]
@@ -490,7 +498,7 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                     if trimmed is not None:
                         report["notes"].append(f"graphic(flow[{i}]) 가장자리의 사진 부분을 잘라 3단 폭에 맞춤")
                         crop = trimmed
-                if r.w >= opt.wide_ratio * cw:
+                if crop.shape[1] >= opt.wide_ratio * cw:
                     # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
                     bottom.append(Item("image", crop, [f"I{i}"], label=f.kind))
                     continue
@@ -531,9 +539,9 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         two_ = 2 * cw + gutter
         res = [0] * opt.columns
         for b in bottom:
-            if b.img.shape[1] <= two_ and opt.columns >= 2:
+            if b.img.shape[1] <= 1.05 * two_ and opt.columns >= 2:
                 for k in range(opt.columns - 2, opt.columns):
-                    res[k] += b.img.shape[0] + m.pitch // 2
+                    res[k] += int(b.img.shape[0] * min(1.0, two_ / b.img.shape[1])) + m.pitch // 2
         cols = pack_columns(items, opt.columns, res)
         y = margin
         layout_plan: list[tuple[str, np.ndarray, int, int]] = []
@@ -570,6 +578,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         two = 2 * cw + gutter
         for b in bottom:
             img = b.img
+            if two < img.shape[1] <= 1.05 * two:  # 2단 폭보다 아주 조금 넓으면 살짝 줄여 2단에
+                img, _ = _fit_width(img, two)
             if img.shape[1] <= two:
                 # 단 2개 폭에 들어가는 그림: 가장 일찍 끝나는 이웃한 두 단 아래 빈자리에
                 i0 = min(range(len(cols) - 1), key=lambda k: (max(bottoms[k], bottoms[k + 1]), -k))
@@ -639,11 +649,15 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             placements.append(Placement(it, x, y, ci))
             y += it.h
 
+    two_c = 2 * cw + gutter
     for b in bottom:
-        scale = min(1.0, (W - 2 * margin) / b.img.shape[1])
-        report["notes"].append(
-            f"넓은 {b.label}({b.ids[0]})은 3단 본문 아래에 전체 폭으로 배치 ({scale:.0%} 크기)"
-        )
+        if b.img.shape[1] <= 1.05 * two_c:
+            scale = min(1.0, two_c / b.img.shape[1])
+            report["notes"].append(f"{b.label}({b.ids[0]})은 단 2개 폭이라 2·3단 아래 빈자리에 배치 ({scale:.0%} 크기)")
+        else:
+            scale = min(1.0, (W - 2 * margin) / b.img.shape[1])
+            report["notes"].append(f"넓은 {b.label}({b.ids[0]})은 3단 본문 아래에 전체 폭으로 배치 ({scale:.0%} 크기)")
+    report["notes"] = list(dict.fromkeys(report["notes"]))
     report["layout"] = {
         "width": W, "height": H, "column_width": cw, "gutter": gutter, "columns": opt.columns,
         "column_heights": [sum(it.h for it in c) for c in cols],
