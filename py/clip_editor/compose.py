@@ -433,6 +433,26 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             crop[erase] = page.paper_rgb
         return crop
 
+    def center_lines(img: np.ndarray, width: int) -> np.ndarray:
+        """Move each text line of a block to the horizontal centre of `width` (lines stay whole)."""
+        from .imageops import runs as _runs
+
+        ink = to_ink(img, page.threshold)
+        out = np.empty((img.shape[0], max(width, img.shape[1]), 3), dtype=np.uint8)
+        out[:] = page.paper_rgb
+        rows = _runs(ink.any(axis=1), min_gap=2)
+        # 줄 사이 빈 행은 위아래 줄에 나눠 붙인다
+        bounds = [0] + [(rows[k][1] + rows[k + 1][0]) // 2 for k in range(len(rows) - 1)] + [img.shape[0]]
+        for k in range(len(rows)):
+            y0, y1 = bounds[k], bounds[k + 1]
+            cols = np.flatnonzero(ink[y0:y1].any(axis=0))
+            if cols.size == 0:
+                continue
+            x0, x1 = int(cols[0]), int(cols[-1]) + 1
+            nx = (out.shape[1] - (x1 - x0)) // 2
+            out[y0:y1, nx : nx + x1 - x0] = img[y0:y1, x0:x1]
+        return out
+
     def make_items(include_photos: bool) -> tuple[list[Item], list[Item], list[Item]]:
         items: list[Item] = []
         top_blocks: list[Item] = []
@@ -480,6 +500,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 if scaled:
                     report["notes"].append(f"{label}(flow[{i}])이 단 폭보다 넓어 단 폭에 맞춰 축소했습니다.")
                 pad = m.pitch // 2
+                if label in ("subtitle", "kicker"):
+                    img = center_lines(img, cw)  # 부제는 줄마다 단 가운데 (cancer)
                 items.append(Item("block", _pad_block(page, img, cw, pad), [f"B{i}"], label=label, pad=pad))
             elif f.type == "image":
                 r = page.clip(f.rect)
@@ -533,6 +555,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
     if footer is not None:
         footer, _ = _fit_width(footer, W - 2 * margin)
 
+    offs: dict = {"top": [0] * opt.columns}
+
     def assemble(include_photos: bool):
         items, top_blocks, pre_title = make_items(include_photos)
         # 단 2개 폭 그림은 마지막 두 단 아래에 자리를 미리 비워 두고 글을 흘린다 (첫 단이 가장 길어짐)
@@ -542,7 +566,17 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             if b.img.shape[1] <= 1.05 * two_ and opt.columns >= 2:
                 for k in range(opt.columns - 2, opt.columns):
                     res[k] += int(b.img.shape[0] * min(1.0, two_ / b.img.shape[1])) + m.pitch // 2
-        cols = pack_columns(items, opt.columns, res)
+        # 2단 폭에 들어가는 긴 부제는 1·2단 위에만 걸치고, 3단은 위로 올린다 (sejong, diplo)
+        top_off = [0] * opt.columns
+        spans = []
+        for b in top_blocks:
+            if opt.columns >= 3 and b.img.shape[1] <= two_:
+                h_ = b.img.shape[0] + m.pitch // 2
+                spans.append((b, top_off[0]))
+                top_off[0] += h_
+                top_off[1] += h_
+        cols = pack_columns(items, opt.columns, [r + t for r, t in zip(res, top_off)])
+        offs["top"] = top_off
         y = margin
         layout_plan: list[tuple[str, np.ndarray, int, int]] = []
         if header is not None:
@@ -570,11 +604,15 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         else:
             title_box = None
         for b in top_blocks:
+            if any(b is sb for sb, _ in spans):
+                continue
             img, _ = _fit_width(b.img, W - 2 * margin)
             layout_plan.append(("topblock:" + b.label, img, margin, y))
             y += img.shape[0] + m.pitch // 2
         body_y = y
-        bottoms = [body_y + sum(it.h for it in c) for c in cols]
+        for b, dy in spans:
+            layout_plan.append(("spanblock:" + b.label, b.img, margin + (two_ - b.img.shape[1]) // 2, body_y + dy))
+        bottoms = [body_y + top_off[k] + sum(it.h for it in c) for k, c in enumerate(cols)]
         two = 2 * cw + gutter
         for b in bottom:
             img = b.img
@@ -642,7 +680,7 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
     placements: list[Placement] = []
     for ci, col in enumerate(cols):
         x = margin + ci * (cw + gutter)
-        y = body_y
+        y = body_y + offs["top"][ci]
         for it in col:
             w = min(it.img.shape[1], W - x)
             canvas[y : y + it.h, x : x + w] = it.img[:, :w]

@@ -18,7 +18,7 @@ class TitleAtom:
     x1: int
     band: Rect
     gap_before: int
-    punct: str = ""  # "low" (… , .) / "mid" (·) / ""
+    punct: str = ""  # "low" (… , .) / "mid" (·) / "high" (따옴표) / ""
     line_start: bool = False
     ink_px: int = 0
 
@@ -75,7 +75,7 @@ def title_atoms(page: Page, rect: Rect) -> tuple[list[TitleAtom], int]:
                 ih = bot - top + 1
                 if ih < 0.4 * char_h:
                     centre = (top + bot) / 2
-                    punct = "low" if centre > 0.6 * (y1 - y0) else ("mid" if centre > 0.3 * (y1 - y0) else "")
+                    punct = "low" if centre > 0.6 * (y1 - y0) else ("mid" if centre > 0.3 * (y1 - y0) else "high")
             atoms.append(
                 TitleAtom(
                     id=f"T{li + 1}A{k + 1}",
@@ -108,9 +108,34 @@ def choose_break(atoms: list[TitleAtom], space: int, manual: int | None) -> tupl
     starts = [i for i, a in enumerate(atoms) if a.line_start and i > 0]
     if len(starts) == 1:
         return starts[0] - 1, "원본 줄바꿈 위치 유지"
+    # 따옴표 안쪽인지 표시한다: 위쪽에 붙은 작은 부호(" ' “ ‘)가 열고 닫는다. 붙어 있는 두 점(“)은 하나로 센다.
+    inside = []
+    depth = 0
+    marks_after: set[int] = set()  # 이 조각 뒤에서 따옴표가 닫힘
+    i = 0
+    while i < n:
+        if atoms[i].punct == "high":
+            j = i
+            while j + 1 < n and atoms[j + 1].punct == "high" and atoms[j + 1].gap_before < 0.3 * atoms[j].band.h:
+                j += 1
+            for k in range(i, j + 1):
+                inside.append(True)
+            depth = 1 - depth
+            if depth == 0:
+                marks_after.add(j)
+            i = j + 1
+            continue
+        inside.append(depth == 1)
+        i += 1
     # 연속된 점(… 가 점 여러 개로 나뉜 경우)은 마지막 점 뒤에서만 끊는다
-    cands = [i for i, a in enumerate(atoms[:-1]) if a.punct in ("low", "mid") and atoms[i + 1].punct not in ("low", "mid")]
-    reason = "원본 문장부호(…·쉼표) 뒤"
+    cands = [i for i, a in enumerate(atoms[:-1])
+             if a.punct in ("low", "mid") and atoms[i + 1].punct not in ("low", "mid") and not inside[i]]
+    # 따옴표 밖 문장부호가 없을 때만: 닫는 따옴표 뒤 띄어쓰기 자리를 끊김 후보로
+    quote_break = False
+    if not cands:
+        cands = sorted(j for j in marks_after if j < n - 1 and atoms[j + 1].gap_before > 0.2 * atoms[j].band.h)
+        quote_break = bool(cands)
+    reason = "닫는 따옴표 뒤 (따옴표 안에서는 끊지 않음)" if quote_break else "원본 문장부호(…·쉼표) 뒤"
     if not cands:
         cands = starts or [i for i in range(n - 1) if atoms[i + 1].gap_before > 0.25 * atoms[i].band.h]
         reason = "문장부호가 없어 원본 줄바꿈/띄어쓰기 위치"
