@@ -74,6 +74,13 @@ def _grow_to_edges(mask: np.ndarray, b: Rect, limit: int) -> Rect:
     return Rect(x0, y0, x1, y1)
 
 
+def _glyph_count(g: np.ndarray, ch: int) -> int:
+    """글자 크기만 한 진한 조각의 수 (도표의 수치·이름표)."""
+    n, _, st, _ = cv2.connectedComponentsWithStats((g < 110).astype(np.uint8), connectivity=8)
+    hs, ws = st[1:, 3], st[1:, 2]
+    return int(((hs > ch // 3) & (hs < 2 * ch) & (ws < 2 * ch)).sum())
+
+
 def flat_frames(g: np.ndarray, ch: int) -> list[Rect]:
     """Boxes with a flat light background: the background colour's connected region runs all
     around the box border (사진은 테두리가 한 가지 색으로 고르게 이어지지 않는다)."""
@@ -92,6 +99,9 @@ def flat_frames(g: np.ndarray, ch: int) -> list[Rect]:
             comp = lab[y : y + h, x : x + w] == k
             sides = [float(v.mean()) for v in (comp[:3], comp[-3:], comp[:, :3], comp[:, -3:])]
             if sum(sides) / 4 > 0.7 and min(sides) > 0.5:
+                out.append(Rect(int(x), int(y), int(x + w), int(y + h)))
+            elif sorted(sides)[1] > 0.9 and _glyph_count(g[y : y + h, x : x + w], ch) >= 30:
+                # 세 변은 바탕색이고 한 변만 사진(인물 등)이 걸쳐 끊긴 상자 — 안에 글자가 많으면 그래픽 (dept)
                 out.append(Rect(int(x), int(y), int(x + w), int(y + h)))
     return out
 
@@ -657,7 +667,10 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
 
     if front:
         at = body_start
-        while at < len(flow) and flow[at].type == "block" and flow[at].label == "series":
+        # 1단 맨 위에 있던 문패·꼭지 제목 뒤, 첫 본문 앞에 넣는다 (dept)
+        while at < len(flow) and flow[at].type == "block" and (
+            flow[at].label == "series" or len(detect_line_runs(tpage, flow[at].rect)) <= 1
+        ):
             at += 1
         flow[at:at] = front
 
