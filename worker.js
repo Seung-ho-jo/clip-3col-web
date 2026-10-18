@@ -31,7 +31,7 @@ async function init() {
   status("편집 프로그램을 준비하는 중", 3);
   py.FS.mkdirTree("/home/pyodide/clip_editor");
   for (const name of PY_FILES) {
-    const res = await fetch(base + "py/clip_editor/" + name);
+    const res = await fetch(base + "py/clip_editor/" + name, { cache: "no-cache" });  // 고친 편집 코드를 바로 받도록
     if (!res.ok) throw new Error(name + " 파일을 불러오지 못했습니다 (" + res.status + ")");
     py.FS.writeFile("/home/pyodide/clip_editor/" + name, await res.text());
   }

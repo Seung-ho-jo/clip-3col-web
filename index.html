@@ -174,7 +174,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   const $ = (id) => document.getElementById(id);
   const state = { images: { result: "example/sample_3col.jpg", orig: "example/sample.jpg" }, tab: "result",
                   out: null, name: "page", joins: {}, busy: false, ready: false, urls: [] };
-  const worker = new Worker("worker.js");
+  const worker = new Worker("worker.js?v=" + Date.now());  // 예전 worker.js 가 캐시에 남지 않게
 
   function setStatus(text, mode) {
     $("status").className = "status " + (mode || "");
