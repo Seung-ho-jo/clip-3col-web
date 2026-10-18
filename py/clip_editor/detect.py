@@ -129,6 +129,15 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
     for b in flat_frames(g, ch):
         tint_boxes.append(b)
         cands.append(b)
+    # 아주 밝은 배경(흰 벽 등)이 많은 사진: 종이보다 조금이라도 어두운 화소가 꽉 찬 직사각형 (coupang)
+    nearwhite = (g < 251).astype(np.uint8)
+    n_, _, st_, _ = cv2.connectedComponentsWithStats(nearwhite, connectivity=4)
+    filled_rects = []
+    for k in range(1, n_):
+        x, y, w, h, area = st_[k]
+        if w > 10 * ch and h > 6 * ch and area > 0.97 * w * h and w * h < 0.6 * g.size:
+            filled_rects.append(Rect(int(x), int(y), int(x + w), int(y + h)))
+            cands.append(filled_rects[-1])
     # Big connected line work (chart frames, axes, boxes) without much tone.
     # (페이지 테두리·긴 괘선처럼 지면 대부분을 두르는 선은 제외)
     cands += [
@@ -153,10 +162,14 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
         )
         if tinted:
             kind = "box-graphic"  # 바탕색 상자 안의 도표·그래픽 (안에 사진이 있어도 그래픽)
-        elif midfrac > 0.2 and textured > 0.5 and fill < 0.8:
+        elif midfrac > 0.2 and textured > 0.5 and fill < 0.8 and not (any(
+            t.overlaps_x(m) * t.overlaps_y(m) > 0.9 * m.w * m.h for t in filled_rects
+        ) and _glyph_count(g[sl], ch) < 30):
             kind = "portrait"  # 직사각형을 채우지 않는 연속 계조 = 윤곽(누끼) 인물사진
-        elif midfrac > 0.2 and strong > 0.75:
-            kind = "photo"
+        elif midfrac > 0.2 and (strong > 0.75 or (textured > 0.5 and any(
+            t.overlaps_x(m) * t.overlaps_y(m) > 0.9 * m.w * m.h for t in filled_rects
+        ) and _glyph_count(g[sl], ch) < 30)):
+            kind = "photo"  # 꽉 찬 직사각형의 연속 계조 = 밝은 배경(흰 벽)이 많은 사진도 사진 (coupang)
         else:
             kind = "graphic"  # 단색 면·글자가 많은 도표/그래픽 박스
         out.append((m, kind))
@@ -179,7 +192,9 @@ def attach_caption(ink: np.ndarray, r: Rect, ch: int) -> Rect:
             break
         y0, y1 = probe.y0 + rows[0], probe.y0 + end + 1
         # 사진 폭 바깥으로 이어지면 본문이므로 설명이 아니다.
-        if ink[y0:y1, max(0, r.x0 - ch // 2) : r.x0].any() or ink[y0:y1, r.x1 : r.x1 + ch // 2].any():
+        # (설명 글이 사진 가장자리보다 1~2px 삐져나온 정도는 괜찮다 — coupang)
+        # (설명 글이 사진 가장자리보다 1~2px 삐져나온 정도는 괜찮다 — coupang)
+        if ink[y0:y1, max(0, r.x0 - ch // 2) : max(0, r.x0 - 2)].any() or ink[y0:y1, r.x1 + 2 : r.x1 + ch // 2].any():
             break
         y = y1 + 1
     return Rect(r.x0, r.y0, r.x1, y + 1) if y > r.y1 else r
