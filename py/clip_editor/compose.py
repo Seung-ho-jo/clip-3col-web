@@ -433,6 +433,11 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             crop[erase] = page.paper_rgb
         return crop
 
+    def n_lines(img: np.ndarray) -> int:
+        from .imageops import runs as _runs
+
+        return len(_runs(to_ink(img, page.threshold).any(axis=1), min_gap=2))
+
     def center_lines(img: np.ndarray, width: int) -> np.ndarray:
         """Move each text line of a block to the horizontal centre of `width` (lines stay whole)."""
         from .imageops import runs as _runs
@@ -508,7 +513,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                     report["notes"].append(f"{label}(flow[{i}])이 단 폭보다 넓어 단 폭에 맞춰 축소했습니다.")
                 pad = m.pitch // 2
                 if label in ("subtitle", "kicker"):
-                    img = center_lines(img, cw)  # 부제는 줄마다 단 가운데 (cancer)
+                    if n_lines(img) >= 2:  # 여러 줄 요약글은 줄마다 단 가운데 (cancer), 한 줄 소제목은 왼쪽 (dept)
+                        img = center_lines(img, cw)
                 items.append(Item("block", _pad_block(page, img, cw, pad), [f"B{i}"], label=label, pad=pad))
             elif f.type == "image":
                 r = page.clip(f.rect)
@@ -619,7 +625,9 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             y += img.shape[0] + m.pitch // 2
         body_y = y
         for b, dy in spans:
-            layout_plan.append(("spanblock:" + b.label, b.img, margin + (two_ - b.img.shape[1]) // 2, body_y + dy))
+            # 여러 줄 요약글은 두 단의 가운데, 한 줄 소제목은 왼쪽 끝에 (dept)
+            sx = margin + ((two_ - b.img.shape[1]) // 2 if n_lines(b.img) >= 2 else 0)
+            layout_plan.append(("spanblock:" + b.label, b.img, sx, body_y + dy))
         bottoms = [body_y + top_off[k] + sum(it.h for it in c) for k, c in enumerate(cols)]
         two = 2 * cw + gutter
         for b in bottom:
