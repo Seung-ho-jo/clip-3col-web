@@ -72,6 +72,7 @@ def _run(layout, preview: Image.Image | None) -> dict:
     md = to_markdown(rep, _state["stem"] + "_3col.jpg")
     out = {
         "result": _jpg(res.image, 95),
+        "result_png": _png(res.image),  # 화질 손실 없는 저장용
         "annotated": _jpg(res.annotated, 85),
         "report_md": md,
         "report_json": json.dumps(rep, ensure_ascii=False, indent=2),

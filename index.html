@@ -145,6 +145,7 @@ button:disabled { opacity: 0.5; cursor: default; }
         <h2 id="h-save">4. 저장</h2>
         <div class="saves">
           <button id="save-jpg" type="button" disabled>편집 이미지 저장 (jpg)</button>
+          <button id="save-png" type="button" disabled>편집 이미지 저장 (png · 화질 손실 없음)</button>
           <button id="save-md" type="button" disabled>보고서 저장 (md)</button>
           <button id="save-json" type="button" disabled>레이아웃 저장 (json)</button>
         </div>
@@ -281,7 +282,7 @@ button:disabled { opacity: 0.5; cursor: default; }
     if (fresh) state.joins = {};
     renderJoins(out.joins);
     showTab(state.tab === "orig" || state.tab === "detect" ? state.tab : "result");
-    for (const id of ["save-jpg", "save-md", "save-json"]) $(id).disabled = false;
+    for (const id of ["save-jpg", "save-png", "save-md", "save-json"]) $(id).disabled = false;
   }
 
   worker.onmessage = (ev) => {
@@ -345,6 +346,7 @@ button:disabled { opacity: 0.5; cursor: default; }
     $("save-note").textContent = filename + " 파일을 내려받았습니다.";
   }
   $("save-jpg").onclick = () => state.out && save(state.name + "_3단.jpg", new Blob([state.out.result], { type: "image/jpeg" }));
+  $("save-png").onclick = () => state.out && save(state.name + "_3단.png", new Blob([state.out.result_png], { type: "image/png" }));
   $("save-md").onclick = () => state.out && save(state.name + "_보고서.md", state.out.report_md);
   $("save-json").onclick = () => state.out && save(state.name + "_레이아웃.json", state.out.layout_json);
 })();
