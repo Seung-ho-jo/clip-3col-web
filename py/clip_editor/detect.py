@@ -648,6 +648,8 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
             return "byline", "한 줄짜리 독립 블록(기자명·안내 문구 추정)"
         if np.median(hs) > 1.15 * body_lh or fill > 1.5 * body_fill:
             return "subtitle", ""
+        if len(lr) >= 2 and "box" not in flags and np.median(np.diff([y0 for y0, _ in lr])) > 1.3 * body_pitch:
+            return "subtitle", "줄 간격이 본문보다 넓은 여러 줄 = 요약글 (kftc)"
         return "box", "그 밖의 블록(그대로 붙임)"
 
     placed: set[int] = set()
@@ -714,6 +716,18 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
             for o in blocks_r
         ))
     ]
+
+    # 제목 오른쪽 위 구석의 날짜·면이 본문 단에 붙어 잡힌 경우: 머리 줄로 옮기고 그 단은 그 아래부터 (kftc)
+    if title is not None and (header is None or header.x1 < page.w / 2):
+        corner = Rect(int(page.w * 0.6), 0, page.w, max(0, title.y0 - ch // 3))
+        sub = ink[corner.y0 : corner.y1, corner.x0 : corner.x1]
+        ys, xs = np.flatnonzero(sub.any(axis=1)), np.flatnonzero(sub.any(axis=0))
+        if ys.size and corner.x0 + xs[-1] > page.w - 3 * ch and ys[0] < 3 * ch:
+            rc = Rect(corner.x0 + int(xs[0]), int(ys[0]), corner.x0 + int(xs[-1]) + 1, int(ys[-1]) + 1)
+            header = _union(header, rc) if header is not None else rc
+            for f in flow:
+                if f.rect.overlaps_x(rc) > 0 and f.rect.y0 < rc.y1 + 2 and f.rect.y1 > rc.y1 + 2 * ch:
+                    f.rect = Rect(f.rect.x0, rc.y1 + 2, f.rect.x1, f.rect.y1)
 
     grow = lambda r: page.clip(Rect(r.x0 - ch // 3, r.y0 - ch // 4, r.x1 + ch // 3, r.y1 + ch // 4)) if r else r  # noqa: E731
     layout = Layout(image=path, header=grow(header), footer=grow(footer), title=title, flow=flow)
