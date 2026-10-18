@@ -84,7 +84,7 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
     tint = cv2.boxFilter(nonwhite.astype(np.float32), -1, (2 * ch | 1, 2 * ch | 1)) > 0.9
     tint_boxes = []
     for b in _boxes(tint):
-        if b.w > 6 * ch and b.h > 4 * ch and float(tint[b.y0 : b.y1, b.x0 : b.x1].mean()) > 0.6:
+        if b.w > 6 * ch and b.h > 4 * ch and float(tint[b.y0 : b.y1, b.x0 : b.x1].mean()) > 0.5:
             b = _grow_to_edges(nonwhite, b, 2 * ch)
             # 바탕색 상자는 한 가지 연한 색이 넓게 깔려 있다 (사진에는 이런 평평한 색이 드물다)
             hist = np.bincount(g[b.y0 : b.y1, b.x0 : b.x1].ravel(), minlength=256)
@@ -360,15 +360,30 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                 trow.append(b)
         leaves = [b for b in leaves if b not in trow]
 
-    # 머리 괘선이 없는 지면: 제목 위 첫 줄을 매체명 줄로 본다
+    # 제목 바로 위에 붙은 작은 글씨(〈3·4호기〉 같은 꼬리표)는 매체명 줄이 아니다 → 제목 위 블록
+    kickers: list[Rect] = []
+    if title is not None:
+        cand = [b for b in leaves
+                if b.y1 <= title.y0 and title.y0 - b.y1 < 0.5 * title.h and info[b]["n"] <= 1 and b.h < 0.6 * title.h]
+        for row in _rows(cand):
+            u = _unite(row)
+            # 지면 양끝에 닿는 줄(왼쪽 매체명 … 오른쪽 날짜)은 꼬리표가 아니라 머리 줄이다
+            if u.x0 < 3 * ch and u.x1 > page.w - 3 * ch:
+                continue
+            for b in row:
+                kickers.append(b)
+                leaves.remove(b)
+    # 머리 괘선이 없는 지면: 제목 위 첫 줄을 매체명 줄로 본다 (지면 맨 위에 있을 때만)
     if header is None and title is not None:
         above = sorted((b for b in leaves if b.y1 <= title.y0), key=lambda r: r.y0)
-        if above:
+        if above and above[0].y0 < 3 * ch and not any(r.y0 < above[0].y1 for r, _ in images):
             hrow = [b for b in above if b.y0 < above[0].y1 + 0.5 * ch]
             header = _unite(hrow)
             leaves = [b for b in leaves if b not in hrow]
 
     flow: list[FlowItem] = []
+    for row in _rows(kickers):
+        flow.append(FlowItem("block", _unite(row), label="kicker", note="제목 위 꼬리표"))
     # 제목 위에 있는 것(시리즈 바, 그래픽 띠 등)은 제목 위에 그대로
     if title is not None:
         pre = [b for b in leaves if b.y1 <= title.y0]
