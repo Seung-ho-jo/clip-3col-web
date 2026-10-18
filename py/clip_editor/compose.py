@@ -493,6 +493,13 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             elif f.type == "block":
                 img = src.crop_rgb(page.clip(f.rect))
                 label = f.label or "block"
+                if img.shape[1] > cw:
+                    # 상자가 글자보다 조금 넓게 잡혀 단 폭을 넘는 경우는 글자 폭으로 줄여 본다 (outdoor)
+                    xs = np.flatnonzero(page.ink[page.clip(f.rect).y0 : page.clip(f.rect).y1, page.clip(f.rect).x0 : page.clip(f.rect).x1].any(axis=0))
+                    if xs.size and xs[-1] + 1 - xs[0] <= 1.03 * cw:
+                        img = img[:, xs[0] : xs[-1] + 1]
+                        if img.shape[1] > cw:  # 1~2px 넘침은 아주 살짝 줄여 단 안에
+                            img, _ = _fit_width(img, cw)
                 if img.shape[1] > cw and not seen_text:
                     top_blocks.append(Item("block", img, [f"B{i}"], label=label))
                     continue
@@ -520,7 +527,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                     if trimmed is not None:
                         report["notes"].append(f"graphic(flow[{i}]) 가장자리의 사진 부분을 잘라 3단 폭에 맞춤")
                         crop = trimmed
-                if crop.shape[1] >= opt.wide_ratio * cw:
+                if crop.shape[1] >= opt.wide_ratio * cw or (f.kind == "graphic" and crop.shape[1] > 1.3 * cw):
+                    # 단 1개에 넣으려면 많이 줄여야 하는 도표도 2단 빈자리로 (outdoor)
                     # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
                     bottom.append(Item("image", crop, [f"I{i}"], label=f.kind))
                     continue

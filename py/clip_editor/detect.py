@@ -305,6 +305,35 @@ def is_rectangular(gray: np.ndarray, r: Rect) -> bool:
     return float(np.mean([rows_l, rows_r, cols_t, cols_b])) > 0.75
 
 
+def split_photo_graphic(gray: np.ndarray, ink: np.ndarray, r: Rect, ch: int) -> int | None:
+    """사진과 단색 바탕 도표가 한 상자로 붙어 있으면 그 경계 x 를 돌려준다 (outdoor).
+
+    사진 쪽은 열마다 평평한 화소가 거의 없고, 도표 쪽은 바탕색 면이 넓으며 글자(수치·제목)가 있다.
+    """
+    import cv2
+
+    if r.w < 30 * ch:
+        return None
+    g = gray[r.y0 : r.y1, r.x0 : r.x1].astype(np.float32)
+    sd = np.sqrt(np.maximum(cv2.blur(g * g, (7, 7)) - cv2.blur(g, (7, 7)) ** 2, 0))
+    flat = np.convolve((sd < 3).mean(axis=0), np.ones(15) / 15, mode="same")
+    w = r.w
+    best, bx = 0.0, None
+    for x in range(int(0.25 * w), int(0.75 * w), max(1, ch // 4)):
+        a, b = flat[:x].mean(), flat[x:].mean()
+        if min(a, b) < 0.12 and max(a, b) > 0.5 and abs(a - b) > best:
+            best, bx = abs(a - b), x
+    if bx is None:
+        return None
+    # 경계를 평평함이 급히 바뀌는 자리로 맞춘다
+    lo, hi = max(1, bx - 3 * ch), min(w - 1, bx + 3 * ch)
+    bx = lo + int(np.argmax(np.abs(np.diff(flat[lo - 1 : hi]))))
+    side = slice(bx, w) if flat[bx:].mean() > flat[:bx].mean() else slice(0, bx)
+    if ink[r.y0 : r.y1, r.x0 : r.x1][:, side].mean() < 0.01:
+        return None  # 글자 없는 평평한 면(하늘 등)은 도표가 아니다
+    return r.x0 + bx
+
+
 def detect(path: str) -> tuple[Layout, Image.Image]:
     page = Page(path)
     ch = estimate_char_h(page)
@@ -341,6 +370,17 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                 kind = "photo"
         if kind == "box-graphic":
             kind = "graphic"
+        sx = split_photo_graphic(page.gray, page.ink, rc, ch) if kind == "photo" else None
+        if sx is not None:
+            g_ = page.gray[rc.y0 : rc.y1, rc.x0 : rc.x1].astype(np.float32)
+            left_flat = float((np.abs(np.diff(g_[:, : sx - rc.x0], axis=1)) < 2).mean())
+            right_flat = float((np.abs(np.diff(g_[:, sx - rc.x0 :], axis=1)) < 2).mean())
+            pr, gr = (Rect(rc.x0, rc.y0, sx, rc.y1), Rect(sx, rc.y0, rc.x1, rc.y1))
+            if left_flat > right_flat:
+                pr, gr = gr, pr
+            images.append((pr, "photo"))
+            images.append((gr, "graphic"))
+            continue
         images.append((rc, kind))
 
     ink = page.ink & ~rule_mask(page.ink, ch)
@@ -596,6 +636,11 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                     flow.append(FlowItem("text", seg, wrap=wrap))
             else:
                 label, note = label_of(b, item[2:])
+                if label == "byline" and not seen_body and ci == 0 and item is col[0]:
+                    lr_ = detect_line_runs(tpage, b)
+                    if lr_ and max(y1 - y0 for y0, y1 in lr_) > 1.3 * body_lh:
+                        # 1단 맨 위의 큰 글씨 한 줄(예: '한경Aicel 분석')은 기자명이 아니라 문패 (outdoor)
+                        label, note = "series", "1단 맨 위 문패"
                 # 사이드바 단 맨 위의 부제, 또는 본문 중간에 끼어 있는 여러 줄짜리 부제 묶음 → 본문 맨 앞으로
                 multi_line = len(detect_line_runs(tpage, b)) >= 2
                 if label == "subtitle" and ((not seen_body and ci > 0) or (seen_body and multi_line)):
