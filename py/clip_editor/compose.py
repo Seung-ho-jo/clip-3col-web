@@ -29,7 +29,7 @@ from .title import TitleResult, build_title
 class Options:
     columns: int = 3
     title_area_ratio: float = 7.0  # 제목 글자 면적 / 본문 글자 면적
-    max_height_ratio: float = 2.0  # 편집본 세로/가로 가 이 값을 넘으면 일반 사진을 뺀다
+    max_height_ratio: float = 1.5  # 편집본 세로/가로가 이 값(A4 클리핑 한 장의 기사 칸)을 넘으면 사진을 큰 것부터 뺀다
     max_graphic_ratio: float = 3.0  # 도표를 넣어도 이 값을 넘으면 가장 큰 도표부터 뺀다
     gutter: float = 1.5  # 단 사이 간격 (본문 글자 높이 배수)
     margin: float = 2.0
@@ -641,20 +641,23 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         H = y + margin
         return items, top_blocks, cols, layout_plan, body_y, H, rule_y, title_box
 
-    has_photo = any(f.type == "image" and f.kind == "photo" for f in flow)
+    # 편집본이 A4 한 장(세로/가로 ≤ √2)에 들어가도록 사진을 큰 것부터 하나씩 뺀다 (업계뉴스 사람 편집본)
+    photos = [i for i, f in enumerate(flow) if f.type == "image" and f.kind == "photo"]
     state = assemble(True)
-    if has_photo and state[5] / W > opt.max_height_ratio:
-        for i, f in enumerate(flow):
-            if f.type == "image" and f.kind == "photo":
-                report["removed"].append(
-                    {"flow": i, "kind": "photo", "rect": f.rect.as_list(),
-                     "reason": f"사진 포함 시 편집본 세로/가로 {state[5] / W:.2f} > {opt.max_height_ratio} (길어짐)"}
-                )
-        state = assemble(False)
-    elif has_photo:
-        report["notes"].append(f"사진 포함 편집본 세로/가로 {state[5] / W:.2f} ≤ {opt.max_height_ratio} → 사진 유지")
+    while state[5] / W > opt.max_height_ratio:
+        left = [i for i in photos if i not in dropped and any(f"I{i}" in it.ids for it in state[0] + state[1] + bottom)]
+        if not left:
+            break
+        big = max(left, key=lambda i: flow[i].rect.w * flow[i].rect.h)
+        dropped.add(big)
+        report["removed"].append(
+            {"flow": big, "kind": "photo", "rect": flow[big].rect.as_list(),
+             "reason": f"사진 포함 시 편집본 세로/가로 {state[5] / W:.2f} > {opt.max_height_ratio} (A4 한 장을 넘음)"}
+        )
+        state = assemble(True)
+    if any(i not in dropped for i in photos):
+        report["notes"].append(f"사진 포함 편집본 세로/가로 {state[5] / W:.2f} ≤ {opt.max_height_ratio} (A4 한 장) → 남은 사진 유지")
     # 도표도 너무 커서 편집본이 지나치게 길어지면 가장 큰 것부터 뺀다
-    photos_in = not any(r.get("kind") == "photo" and "길어짐" in r.get("reason", "") for r in report["removed"])
     while state[5] / W > opt.max_graphic_ratio and bottom:
         big = max(bottom, key=lambda b: b.img.shape[0])
         idx = int(big.ids[0][1:])
@@ -663,7 +666,7 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             {"flow": idx, "kind": flow[idx].kind, "rect": flow[idx].rect.as_list(),
              "reason": f"너무 큰 도표 — 넣으면 편집본 세로/가로 {state[5] / W:.2f} > {opt.max_graphic_ratio}"}
         )
-        state = assemble(photos_in)
+        state = assemble(True)
     for i, f, why in removed_now:
         report["removed"].append({"flow": i, "kind": f.kind, "rect": f.rect.as_list(), "reason": why})
     for i, f in enumerate(flow):
