@@ -630,10 +630,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 # 단 2개 폭에 들어가는 그림: 가장 일찍 끝나는 이웃한 두 단 아래 빈자리에
                 i0 = min(range(len(cols) - 1), key=lambda k: (max(bottoms[k], bottoms[k + 1]), -k))
                 yy = max(bottoms[i0], bottoms[i0 + 1]) + m.pitch // 2
-                # 가운데에 띄우지 않고 단 끝(바깥쪽 단의 가장자리)에 붙인다 (outdoor)
+                # 가운데에 띄우지 않고 왼쪽 단의 왼쪽 끝(2·3단 자리면 2단 왼쪽)에 맞춘다 (outdoor)
                 x0 = margin + i0 * (cw + gutter)
-                if i0 + 1 == len(cols) - 1:
-                    x0 += two - img.shape[1]
                 layout_plan.append(("bottom:" + b.label, img, x0, yy))
                 bottoms[i0] = bottoms[i0 + 1] = yy + img.shape[0]
             else:
