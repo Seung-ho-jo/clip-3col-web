@@ -436,6 +436,14 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                 trow.append(b)
         leaves = [b for b in leaves if b not in trow]
 
+    # 머리 괘선이 없어도 지면 맨 위에 왼쪽 매체명·오른쪽 날짜·면이 있으면 그 둘이 머리 줄이다 (lowsugar)
+    if header is None and title is not None:
+        top_row = [b for b in leaves if b.y1 <= title.y0 and b.y0 < 3 * ch and b.h < 0.6 * title.h]
+        if top_row:
+            u = _unite(top_row)
+            if u.x0 < 3 * ch and u.x1 > page.w - 3 * ch:
+                header = u
+                leaves = [b for b in leaves if b not in top_row]
     # 제목 바로 위에 붙은 작은 글씨(〈3·4호기〉 같은 꼬리표)는 매체명 줄이 아니다 → 제목 위 블록
     kickers: list[Rect] = []
     if title is not None:
