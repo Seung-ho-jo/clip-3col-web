@@ -177,9 +177,10 @@ def find_images(page: Page, ch: int) -> list[tuple[Rect, str]]:
 
 
 def attach_caption(ink: np.ndarray, r: Rect, ch: int) -> Rect:
-    """Extend an image box over caption lines right below it (up to 3 short lines inside its x range)."""
+    """Extend an image box over caption lines right below it (up to 5 short lines inside its x range:
+    사진 출처 한 줄 + 설명 네 줄 — samyang2)."""
     y = r.y1
-    for _ in range(3):
+    for _ in range(5):
         probe = Rect(r.x0, y, r.x1, min(ink.shape[0], y + int(2.2 * ch)))
         sub = ink[probe.y0 : probe.y1, probe.x0 : probe.x1]
         rows = np.flatnonzero(sub.any(axis=1))
@@ -408,6 +409,37 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
             continue
         images.append((rc, kind))
 
+    # 나란히 붙어 있는 그림 조각(누끼 제품 사진 여러 개 등)은 하나로 합친다 (jelly)
+    merged_any = True
+    while merged_any:
+        merged_any = False
+        for i in range(len(images)):
+            for j in range(i + 1, len(images)):
+                (a, ka), (b, kb) = images[i], images[j]
+                gap = max(a.x0, b.x0) - min(a.x1, b.x1)
+                if gap <= 2 * ch and a.overlaps_y(b) > 0.5 * min(a.h, b.h) and "portrait" in (ka, kb):
+                    images[i] = (_union(a, b), "portrait")  # 감싸는 본문이 없으면 아래에서 사진으로
+                    del images[j]
+                    merged_any = True
+                    break
+            if merged_any:
+                break
+    # 윤곽 그림인데 옆에 본문이 감싸 돌지 않으면 누끼 제품 사진이다 → 보통 사진처럼 (jelly)
+    for k, (r, ik) in enumerate(images):
+        if ik != "portrait":
+            continue
+        side = 2 * ch
+        lft = page.ink[r.y0 : r.y1, max(0, r.x0 - side) : max(0, r.x0 - ch // 3)]
+        rgt = page.ink[r.y0 : r.y1, min(page.w, r.x1 + ch // 3) : min(page.w, r.x1 + side)]
+        if lft.any(axis=1).mean() < 0.15 and rgt.any(axis=1).mean() < 0.15:
+            # 사진 설명은 누끼 그림보다 넓게(단 폭으로) 깔리는 일이 많다 → 양옆 여백까지 넓혀서 붙인다
+            wide = Rect(max(0, r.x0 - 3 * ch), r.y0, min(page.w, r.x1 + 3 * ch), r.y1)
+            rc = attach_caption(page.ink, wide, ch)
+            if rc.y1 > wide.y1:
+                sub = page.ink[wide.y1 : rc.y1, wide.x0 : wide.x1]
+                xs = np.flatnonzero(sub.any(axis=0))
+                r = Rect(min(r.x0, wide.x0 + int(xs[0])), r.y0, max(r.x1, wide.x0 + int(xs[-1]) + 1), rc.y1)
+            images[k] = (r, "photo")
     ink = page.ink & ~rule_mask(page.ink, ch)
     ink[: zone.y0] = False
     ink[zone.y1 :] = False
@@ -673,7 +705,7 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                 label, note = label_of(b, item[2:])
                 if label == "byline" and not seen_body and ci == 0 and item is col[0]:
                     lr_ = detect_line_runs(tpage, b)
-                    if lr_ and max(y1 - y0 for y0, y1 in lr_) > 1.3 * body_lh:
+                    if lr_:  # 1단 맨 위 한 줄은 기자명일 수 없다 ('트렌드 NOW' — jelly)
                         # 1단 맨 위의 큰 글씨 한 줄(예: '한경Aicel 분석')은 기자명이 아니라 문패 (outdoor)
                         label, note = "series", "1단 맨 위 문패"
                 # 사이드바 단 맨 위의 부제, 또는 본문 중간에 끼어 있는 여러 줄짜리 부제 묶음 → 본문 맨 앞으로
@@ -693,8 +725,11 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
     if front:
         at = body_start
         # 1단 맨 위에 있던 문패·꼭지 제목 뒤, 첫 본문 앞에 넣는다 (dept)
+        def _text_lines(r):  # 얇은 괘선(꼭지 제목 위 회색 띠 등)은 줄로 세지 않는다 (samyang2)
+            return sum(1 for y0, y1 in detect_line_runs(tpage, r) if y1 - y0 >= ch // 3)
+
         while at < len(flow) and flow[at].type == "block" and (
-            flow[at].label == "series" or len(detect_line_runs(tpage, flow[at].rect)) <= 1
+            flow[at].label == "series" or _text_lines(flow[at].rect) <= 1
         ):
             at += 1
         flow[at:at] = front

@@ -97,9 +97,11 @@ def regroup_wide(img: np.ndarray, page: Page, width: int, ch: int) -> np.ndarray
     out[:] = page.paper_rgb
     pad = 2
     first, last = groups[0], groups[-1]
-    out[:, : first[1] - first[0] + pad] = img[:, max(0, first[0] - pad) : first[1]][:, : first[1] - first[0] + pad]
-    lw = last[1] - last[0]
-    out[:, width - lw - pad :] = img[:, last[0] - pad : last[1]] if last[0] >= pad else img[:, last[0] : last[1] + pad]
+    # 그림 가장자리에 닿은 글자도 안전하게 (lowsugar 처럼 x=0 에서 시작하는 매체명 — jelly)
+    a = img[:, max(0, first[0] - pad) : min(img.shape[1], first[1] + pad)]
+    out[:, : a.shape[1]] = a
+    b = img[:, max(0, last[0] - pad) : min(img.shape[1], last[1] + pad)]
+    out[:, width - b.shape[1] :] = b
     mids = groups[1:-1]
     if mids:
         mw = mids[-1][1] - mids[0][0]
@@ -207,6 +209,15 @@ def pack_columns(items: list[Item], n: int, reserve: list[int] | None = None) ->
             else:
                 continue
             col[:] = rest[:j] + [it] + rest[j:]
+    # 단 맨 끝에 한 줄짜리 문단(◇ 중간제목)만 남으면 다음 단 맨 위로 넘겨 본문과 붙인다 (samyang2)
+    counts: dict = {}
+    for it in items:
+        if texty(it):
+            counts[it.para] = counts.get(it.para, 0) + 1
+    for ci in range(n - 1):
+        col, nxt = cols[ci], cols[ci + 1]
+        if len(col) > 1 and nxt and texty(col[-1]) and counts.get(col[-1].para) == 1 and texty(nxt[0]):
+            nxt.insert(0, col.pop())
     return cols
 
 
@@ -436,7 +447,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
     def n_lines(img: np.ndarray) -> int:
         from .imageops import runs as _runs
 
-        return len(_runs(to_ink(img, page.threshold).any(axis=1), min_gap=2))
+        # 얇은 괘선(회색 띠 등)은 글줄로 세지 않는다 (samyang2)
+        return sum(1 for a, b in _runs(to_ink(img, page.threshold).any(axis=1), min_gap=2) if b - a >= m.char_h // 3)
 
     def center_lines(img: np.ndarray, width: int) -> np.ndarray:
         """Move each text line of a block to the horizontal centre of `width` (lines stay whole)."""
