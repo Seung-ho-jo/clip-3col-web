@@ -48,6 +48,7 @@ class Item:
     para: int | None = None
     pad: int = 0  # paper rows above/below inside img
     textmask: np.ndarray | None = None  # slice: which pixels are body-text ink (for verification)
+    align: str = "center"  # 3단 아래 그림의 가로 자리 (줄인 사진은 왼쪽 — jelly)
 
     @property
     def h(self) -> int:
@@ -375,6 +376,26 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
     bottom: list[Item] = []
     removed_now: list = []
     dropped: set[int] = set()  # 너무 커서 뺀 도표 (flow index)
+    shrink: dict[int, float] = {}  # 길어서 줄인 사진 (flow index → 배율). 설명 글은 원래 크기 그대로
+
+    def shrink_photo(img: np.ndarray, s_: float) -> np.ndarray:
+        """사진 부분만 s_ 배로 줄이고 아래 사진 설명은 원래 글자 크기로 붙인다 (jelly — 사용자 편집본)."""
+        g = np.asarray(Image.fromarray(img).convert("L"))
+        tone_rows = ((g > 50) & (g < 200)).mean(axis=1)
+        cut = len(tone_rows)
+        for y_ in range(len(tone_rows) - 1, -1, -1):  # 아래에서부터: 연속 계조가 시작되는 줄 = 사진의 끝
+            if tone_rows[max(0, y_ - 4) : y_ + 1].min() > 0.2:
+                cut = y_ + 1
+                break
+        pic, cap = img[:cut], img[cut:]
+        pic = resize(pic, max(1, int(round(pic.shape[1] * s_))), max(1, int(round(pic.shape[0] * s_))))
+        if not cap.size:
+            return pic
+        out = np.empty((pic.shape[0] + cap.shape[0], max(pic.shape[1], cap.shape[1]), 3), dtype=np.uint8)
+        out[:] = page.paper_rgb
+        out[: pic.shape[0], : pic.shape[1]] = pic
+        out[pic.shape[0] :, : cap.shape[1]] = cap
+        return out
 
     def attached_to_graphic(r: Rect) -> bool:
         d = max(3, m.char_h // 2)
@@ -568,6 +589,9 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 if crop.shape[1] >= opt.wide_ratio * cw or (f.kind == "graphic" and crop.shape[1] > 1.3 * cw):
                     # 단 1개에 넣으려면 많이 줄여야 하는 도표도 2단 빈자리로 (outdoor)
                     # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
+                    if i in shrink:
+                        bottom.append(Item("image", shrink_photo(crop, shrink[i]), [f"I{i}"], label=f.kind, align="left"))
+                        continue
                     bottom.append(Item("image", crop, [f"I{i}"], label=f.kind))
                     continue
                 img, scaled = _fit_width(crop, cw)
@@ -677,7 +701,7 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
             else:
                 img, s_ = _fit_width(img, W - 2 * margin)
                 yy = max(bottoms) + m.pitch
-                layout_plan.append(("bottom:" + b.label, img, (W - img.shape[1]) // 2, yy))
+                layout_plan.append(("bottom:" + b.label, img, margin if b.align == "left" else (W - img.shape[1]) // 2, yy))
                 bottoms = [yy + img.shape[0]] * len(cols)
         y = max(bottoms)
         if footer is not None:
@@ -698,6 +722,22 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
         if not left:
             break
         big = max(left, key=lambda i: flow[i].rect.w * flow[i].rect.h)
+        # 3단 아래 넓은 사진은 빼기 전에 먼저 줄여 본다 (설명 글은 그대로, 왼쪽 맞춤 — jelly 사용자 편집본)
+        if big not in shrink and any(f"I{big}" in b.ids for b in bottom):
+            full = next(b for b in bottom if f"I{big}" in b.ids).img.shape[1]
+            fit = None
+            for s_ in (0.9, 0.8, 0.7, 0.6):
+                if full * min(1.0, (W - 2 * margin) / full) * s_ <= 2 * cw + gutter:
+                    break  # 두 단 폭보다 작게는 줄이지 않는다
+                shrink[big] = min(1.0, (W - 2 * margin) / full) * s_
+                if assemble(True)[5] / W <= opt.max_height_ratio:
+                    fit = shrink[big]
+                    break
+            if fit is not None:
+                report["notes"].append(f"사진(flow[{big}])이 커서 {fit:.0%}로 줄여 왼쪽에 맞춤 — 사진 설명은 원래 크기")
+                state = assemble(True)
+                continue
+            shrink.pop(big, None)
         dropped.add(big)
         report["removed"].append(
             {"flow": big, "kind": "photo", "rect": flow[big].rect.as_list(),
