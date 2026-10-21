@@ -331,6 +331,9 @@ def is_rectangular(gray: np.ndarray, r: Rect) -> bool:
     return float(np.mean([rows_l, rows_r, cols_t, cols_b])) > 0.75
 
 
+MID_SUMMARY = "본문 중간 요약글 — 가까운 단 끝에 둔다"
+
+
 def split_photo_graphic(gray: np.ndarray, ink: np.ndarray, r: Rect, ch: int) -> int | None:
     """사진과 단색 바탕 도표가 한 상자로 붙어 있으면 그 경계 x 를 돌려준다 (outdoor).
 
@@ -708,10 +711,14 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
                     if lr_:  # 1단 맨 위 한 줄은 기자명일 수 없다 ('트렌드 NOW' — jelly)
                         # 1단 맨 위의 큰 글씨 한 줄(예: '한경Aicel 분석')은 기자명이 아니라 문패 (outdoor)
                         label, note = "series", "1단 맨 위 문패"
-                # 사이드바 단 맨 위의 부제, 또는 본문 중간에 끼어 있는 여러 줄짜리 부제 묶음 → 본문 맨 앞으로
+                # 사이드바 단 맨 위의 부제 → 본문 맨 앞으로.
+                # 본문 중간에 끼어 있던 여러 줄 요약글은 그 읽는 자리에 두고, 편집할 때 가까운 단 끝에 놓는다 (samyang2)
                 multi_line = len(detect_line_runs(tpage, b)) >= 2
-                if label == "subtitle" and ((not seen_body and ci > 0) or (seen_body and multi_line)):
+                if label == "subtitle" and not seen_body and ci > 0:
                     front.append(FlowItem("block", b, label=label, note="본문 앞으로 옮긴 부제"))
+                    continue
+                if label == "subtitle" and seen_body and multi_line:
+                    flow.append(FlowItem("block", b, label=label, note=MID_SUMMARY))
                     continue
                 flow.append(FlowItem("block", b, label=label, note=note))
         for k, (r, ik) in enumerate(images):
@@ -751,6 +758,38 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
             for o in blocks_r
         ))
     ]
+
+    # 한 줄짜리 꼭지 제목·문패 바로 위아래의 가는 선(괘선)은 블록에 함께 붙인다 ('트렌드 NOW', samyang2)
+    # (몇 px 두께의 선만 — 아래 표의 색 띠 같은 넓은 면은 아니다 — cptpp)
+    def _covered(yy, x0_, x1_):
+        return (page.gray[yy, x0_:x1_] < 250).mean() > 0.7
+
+    for f in flow:
+        if f.type != "block" or sum(1 for a, b in detect_line_runs(tpage, f.rect) if b - a >= ch // 3) > 1:
+            continue
+        r = f.rect
+        x0, x1, y0, y1 = r.x0, r.x1, r.y0, r.y1
+        for direction in (-1, 1):
+            start = r.y0 - 1 if direction < 0 else r.y1
+            yy = start
+            while 0 <= yy < page.h and abs(yy - start) < 1.2 * ch and not _covered(yy, r.x0, r.x1):
+                yy += direction
+            if not (0 <= yy < page.h) or abs(yy - start) >= 1.2 * ch:
+                continue
+            t0 = yy
+            while 0 <= yy < page.h and _covered(yy, r.x0, r.x1):
+                yy += direction
+            thick = abs(yy - t0)
+            if thick > max(4, ch // 5):
+                continue
+            lo, hi = min(t0, yy - direction), max(t0, yy - direction)
+            mid_row = max(range(lo, hi + 1), key=lambda y_: (page.gray[y_, r.x0 : r.x1] < 250).mean())
+            seg = next(((a, b) for a, b in runs(page.gray[mid_row] < 250, min_gap=3) if a <= r.x0 + 2 and b >= r.x1 - 2), None)
+            if seg is None or seg[1] - seg[0] > 1.6 * max(r.w, 1) + 20 * ch:
+                continue
+            x0, x1 = min(x0, seg[0]), max(x1, seg[1])
+            y0, y1 = min(y0, lo), max(y1, hi + 1)
+        f.rect = Rect(x0, y0, x1, y1)
 
     # 제목 오른쪽 위 구석의 날짜·면이 본문 단에 붙어 잡힌 경우: 머리 줄로 옮기고 그 단은 그 아래부터 (kftc)
     if title is not None and (header is None or header.x1 < page.w / 2):

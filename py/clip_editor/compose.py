@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .detect import MID_SUMMARY
 from .imageops import Page, Rect, portrait_mask, resize, strip_rules, to_ink, tone_mask
 from .layout import Layout
 from .textflow import (
@@ -29,11 +30,11 @@ from .title import TitleResult, build_title
 class Options:
     columns: int = 3
     title_area_ratio: float = 7.0  # 제목 글자 면적 / 본문 글자 면적
-    max_height_ratio: float = 1.5  # 편집본 세로/가로가 이 값(A4 클리핑 한 장의 기사 칸)을 넘으면 사진을 큰 것부터 뺀다
+    max_height_ratio: float = 1.6  # 편집본 세로/가로가 이 값(A4 한 장 정도 — 사용자 편집본 1.43·1.58)을 넘으면 사진을 큰 것부터 뺀다
     max_graphic_ratio: float = 3.0  # 도표를 넣어도 이 값을 넘으면 가장 큰 도표부터 뺀다
     gutter: float = 1.5  # 단 사이 간격 (본문 글자 높이 배수)
     margin: float = 2.0
-    rule: bool = True
+    rule: bool = False  # 머리 줄 아래 구분선 (사용자 피드백으로 긋지 않음 — samyang2)
     wide_ratio: float = 2.0  # 원래 폭이 단 폭의 이 배수 이상인 그림은 3단 아래 전체 폭으로
     join_default: str = "punct"  # 다시 짠 문단의 줄 이음: punct(문장부호 뒤만 띄움) | space | none
 
@@ -125,7 +126,7 @@ def float_to_boundaries(items: list[Item]) -> list[Item]:
     k = 0
     while k < len(out):
         it = out[k]
-        if not texty(it):
+        if not texty(it) and it.label != "midsub":  # 중간 요약글은 원래 읽는 자리를 그대로 기억 (단 끝에 놓임)
             prev = next((out[j] for j in range(k - 1, -1, -1) if texty(out[j])), None)
             nxt_i = next((j for j in range(k + 1, len(out)) if texty(out[j])), None)
             if prev is not None and nxt_i is not None and out[nxt_i].para == prev.para:
@@ -144,7 +145,24 @@ def pack_columns(items: list[Item], n: int, reserve: list[int] | None = None) ->
     """reserve[k]: 그 단 아래에 비워 둘 높이 (단 2개 폭 도표 자리)."""
     if not items:
         return [[] for _ in range(n)]
-    reserve = reserve or [0] * n
+    reserve = list(reserve or [0] * n)
+    mids = [it for it in items if it.label == "midsub"]
+    if mids and n >= 2:
+        # 본문 중간 요약글은 빼고 흘린 뒤, 원래 읽는 자리와 가장 가까운 단 끝에 붙이고 그만큼 그 단을 비워 다시 흘린다
+        rest = [it for it in items if it.label != "midsub"]
+        pos = {id(m_): sum(1 for x in items[: items.index(m_)] if x.label != "midsub") for m_ in mids}
+        where: dict = {}
+        for m_ in mids:
+            # 단마다 그 단 끝에 둔다고 보고 흘려 본 뒤, 단 끝이 원래 읽는 자리와 가장 가까운 단을 고른다
+            def miss(k):
+                w = {**where, id(m_): k}
+                c = pack_columns(rest, n, [r + sum(x.h for x in mids if w.get(id(x)) == j) for j, r in enumerate(reserve)])
+                return abs(sum(len(cc) for cc in c[: k + 1]) - pos[id(m_)])
+            where[id(m_)] = min(range(n - 1), key=miss)
+        cols = pack_columns(rest, n, [r + sum(m_.h for m_ in mids if where.get(id(m_)) == k) for k, r in enumerate(reserve)])
+        for m_ in mids:
+            cols[where[id(m_)]].append(m_)
+        return cols
 
     def fill(limit: int) -> list[list[Item]] | None:
         cols: list[list[Item]] = [[]]
@@ -173,7 +191,7 @@ def pack_columns(items: list[Item], n: int, reserve: list[int] | None = None) ->
     texty = lambda it: it.kind in ("line", "packed", "slice")  # noqa: E731
     for ci, col in enumerate(cols):
         later = any(cols[k] for k in range(ci + 1, n))
-        for it in [x for x in col if not texty(x)]:
+        for it in [x for x in col if not texty(x) and x.label != "midsub"]:
             k = col.index(it)
             rest = col[:k] + col[k + 1 :]
 
@@ -527,6 +545,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 if label in ("subtitle", "kicker"):
                     if n_lines(img) >= 2:  # 여러 줄 요약글은 줄마다 단 가운데 (cancer), 한 줄 소제목은 왼쪽 (dept)
                         img = center_lines(img, cw)
+                if f.note == MID_SUMMARY:
+                    label = "midsub"  # 본문 중간 요약글: 단 끝에 붙는다
                 items.append(Item("block", _pad_block(page, img, cw, pad), [f"B{i}"], label=label, pad=pad))
             elif f.type == "image":
                 r = page.clip(f.rect)
