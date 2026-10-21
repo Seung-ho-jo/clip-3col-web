@@ -374,6 +374,8 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
     zone = Rect(0, (top + 3) if top is not None else 0, page.w, (bottom - 2) if bottom is not None else page.h)
 
     def ink_box(r: Rect) -> Rect | None:
+        if r.w <= 0 or r.h <= 2:  # 지면 테두리 선이 맨 위·맨 아래에 붙어 있으면 빈 영역 (chiikawa)
+            return None
         sub = page.ink[r.y0 : r.y1, r.x0 : r.x1] & ~rule_mask(page.ink[r.y0 : r.y1, r.x0 : r.x1], ch)
         ys, xs = np.flatnonzero(sub.any(axis=1)), np.flatnonzero(sub.any(axis=0))
         if not ys.size:

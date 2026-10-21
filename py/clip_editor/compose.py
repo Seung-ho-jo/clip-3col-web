@@ -76,7 +76,7 @@ class Result:
 def _pad_block(page: Page, img: np.ndarray, width: int, pad: int, align: str = "left") -> np.ndarray:
     out = np.empty((img.shape[0] + 2 * pad, max(width, img.shape[1]), 3), dtype=np.uint8)
     out[:] = page.paper_rgb
-    x = (out.shape[1] - img.shape[1]) // 2 if align == "center" else 0
+    x = (out.shape[1] - img.shape[1]) // 2 if align == "center" else (out.shape[1] - img.shape[1] if align == "right" else 0)
     out[pad : pad + img.shape[0], x : x + img.shape[1]] = img
     return out
 
@@ -276,10 +276,15 @@ def analyze(layout: Layout) -> Analysis:
                 rgb = src.rgb.astype(np.int16)
                 sat = (rgb.max(axis=2) - rgb.min(axis=2)) > 60
                 t_ = tone | sat
+                # 거의 흰 그림(흰 캐릭터 팝콘통 등)은 연한 면으로 윤곽을 잡는다 — 글자 번짐은 열림 연산으로 버림 (chiikawa)
+                import cv2 as _cv2
+
+                light = ((src.gray > 120) & (src.gray < 253)).astype(np.uint8)
+                t_ = t_ | _cv2.morphologyEx(light, _cv2.MORPH_OPEN, np.ones((5, 5), np.uint8)).astype(bool)
             pm = portrait_mask(src.ink, t_, r, ch0)
             img_mask[r.y0 : r.y1, r.x0 : r.x1] |= pm
             silhouettes[id(f)] = (r, pm)
-            suspicious += covered_glyph_ink(src.ink, tone, r, pm, ch0)
+            suspicious += covered_glyph_ink(src.ink, t_, r, pm, ch0)  # 윤곽을 잡은 그 면 기준 (chiikawa)
         else:
             img_mask[r.y0 : r.y1, r.x0 : r.x1] = True
     text_mask = np.zeros_like(img_mask)
@@ -437,6 +442,11 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
 
     text_rects = [page.clip(f.rect) for f in flow if f.type == "text"]
 
+    def _right_aligned(r: Rect) -> bool:
+        """원본에서 단 오른쪽 끝에 붙어 있던 기자명은 편집본에서도 오른쪽에 (chiikawa)."""
+        col = [t for t in text_rects if t.x0 - m.char_h <= r.x0 and r.x1 <= t.x1 + m.char_h]
+        return bool(col) and r.x0 - min(t.x0 for t in col) > 2 * m.char_h
+
     def slice_rect(reg) -> Rect:
         return Rect(reg.text_left, reg.lines[0].band.y0, reg.text_left + cw, reg.lines[-1].band.y1)
 
@@ -552,9 +562,9 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 if img.shape[1] > cw:
                     # 상자가 글자보다 조금 넓게 잡혀 단 폭을 넘는 경우는 글자 폭으로 줄여 본다 (outdoor)
                     xs = np.flatnonzero(page.ink[page.clip(f.rect).y0 : page.clip(f.rect).y1, page.clip(f.rect).x0 : page.clip(f.rect).x1].any(axis=0))
-                    if xs.size and xs[-1] + 1 - xs[0] <= 1.03 * cw:
+                    if xs.size and xs[-1] + 1 - xs[0] <= 1.05 * cw:
                         img = img[:, xs[0] : xs[-1] + 1]
-                        if img.shape[1] > cw:  # 1~2px 넘침은 아주 살짝 줄여 단 안에
+                        if img.shape[1] > cw:  # 5% 이내 넘침은 살짝 줄여 단 안에 (chiikawa)
                             img, _ = _fit_width(img, cw)
                 if img.shape[1] > cw and not seen_text:
                     top_blocks.append(Item("block", img, [f"B{i}"], label=label))
@@ -568,7 +578,8 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                         img = center_lines(img, cw)
                 if f.note == MID_SUMMARY:
                     label = "midsub"  # 본문 중간 요약글: 단 끝에 붙는다
-                items.append(Item("block", _pad_block(page, img, cw, pad), [f"B{i}"], label=label, pad=pad))
+                items.append(Item("block", _pad_block(page, img, cw, pad, align="right" if label == "byline" and _right_aligned(page.clip(f.rect)) else "left"),
+                                  [f"B{i}"], label=label, pad=pad))
             elif f.type == "image":
                 r = page.clip(f.rect)
                 if f.kind == "portrait":
