@@ -34,6 +34,7 @@ class Options:
     max_graphic_ratio: float = 3.0  # 도표를 넣어도 이 값을 넘으면 가장 큰 도표부터 뺀다
     gutter: float = 1.5  # 단 사이 간격 (본문 글자 높이 배수)
     margin: float = 2.0
+    keep_size_label: bool = False  # 하단 크기 표기 '(5.08×30.18)cm' — 필요 없는 정보라 넣지 않음 (kimchi 피드백)
     rule: bool = False  # 머리 줄 아래 구분선 (사용자 피드백으로 긋지 않음 — samyang2)
     wide_ratio: float = 2.0  # 원래 폭이 단 폭의 이 배수 이상인 그림은 3단 아래 전체 폭으로
     join_default: str = "punct"  # 다시 짠 문단의 줄 이음: punct(문장부호 뒤만 띄움) | space | none
@@ -91,13 +92,22 @@ def regroup_wide(img: np.ndarray, page: Page, width: int, ch: int) -> np.ndarray
         # 좁은 지면(1단 기사)의 머리: 매체명 줄은 왼쪽, 오른쪽에 붙어 있던 날짜·면 줄은 편집본 오른쪽 끝으로 (kimchi)
         bands = _runs(ink.any(axis=1), min_gap=max(2, ch // 4))
         if len(bands) >= 2:
-            out = np.empty((img.shape[0], width, 3), dtype=np.uint8)
-            out[:] = page.paper_rgb
+            # 왼쪽 줄(매체명)과 오른쪽 줄(날짜·면)을 각각 맨 위에서부터 쌓아, 둘의 윗선을 맞춘다 (kimchi 피드백)
+            left, right = [], []
             for a, b in bands:
                 xs = np.flatnonzero(ink[a:b].any(axis=0))
                 piece = img[a:b, xs[0] : xs[-1] + 1]
-                x = width - piece.shape[1] if xs[0] > 0.25 * img.shape[1] else 0
-                out[a:b, x : x + piece.shape[1]] = piece
+                (right if xs[0] > 0.25 * img.shape[1] else left).append(piece)
+            gap = max(2, ch // 4)
+            h = max(sum(p_.shape[0] for p_ in col) + gap * max(0, len(col) - 1) for col in (left, right))
+            out = np.empty((h, width, 3), dtype=np.uint8)
+            out[:] = page.paper_rgb
+            for col, side in ((left, "l"), (right, "r")):
+                y = 0
+                for p_ in col:
+                    x = 0 if side == "l" else width - p_.shape[1]
+                    out[y : y + p_.shape[0], x : x + p_.shape[1]] = p_
+                    y += p_.shape[0] + gap
             return out
     if img.shape[1] <= width:
         return img
@@ -727,7 +737,7 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 layout_plan.append(("bottom:" + b.label, img, margin if b.align == "left" else (W - img.shape[1]) // 2, yy))
                 bottoms = [yy + img.shape[0]] * len(cols)
         y = max(bottoms)
-        if footer is not None:
+        if footer is not None and opt.keep_size_label:  # 하단 크기 표기는 기본으로 뺀다 (kimchi 피드백)
             y += m.pitch
             fx = margin
             if layout.footer and (layout.footer.x0 + layout.footer.x1) / 2 > page.w / 2:
