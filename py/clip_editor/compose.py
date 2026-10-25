@@ -84,11 +84,23 @@ def _pad_block(page: Page, img: np.ndarray, width: int, pad: int, align: str = "
 def regroup_wide(img: np.ndarray, page: Page, width: int, ch: int) -> np.ndarray:
     """A header wider than the edit (매체명 ... 날짜·면) is re-spaced, not shrunk:
     groups separated by wide blanks keep their size; the first goes left, the last right."""
-    if img.shape[1] <= width:
-        return img
     from .imageops import runs as _runs
 
     ink = to_ink(img, page.threshold)
+    if img.shape[1] < 0.7 * width:
+        # 좁은 지면(1단 기사)의 머리: 매체명 줄은 왼쪽, 오른쪽에 붙어 있던 날짜·면 줄은 편집본 오른쪽 끝으로 (kimchi)
+        bands = _runs(ink.any(axis=1), min_gap=max(2, ch // 4))
+        if len(bands) >= 2:
+            out = np.empty((img.shape[0], width, 3), dtype=np.uint8)
+            out[:] = page.paper_rgb
+            for a, b in bands:
+                xs = np.flatnonzero(ink[a:b].any(axis=0))
+                piece = img[a:b, xs[0] : xs[-1] + 1]
+                x = width - piece.shape[1] if xs[0] > 0.25 * img.shape[1] else 0
+                out[a:b, x : x + piece.shape[1]] = piece
+            return out
+    if img.shape[1] <= width:
+        return img
     groups = _runs(ink.any(axis=0), min_gap=3 * ch)
     if len(groups) < 2:
         return img

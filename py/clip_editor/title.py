@@ -137,7 +137,8 @@ def choose_break(atoms: list[TitleAtom], space: int, manual: int | None) -> tupl
         quote_break = bool(cands)
     reason = "닫는 따옴표 뒤 (따옴표 안에서는 끊지 않음)" if quote_break else "원본 문장부호(…·쉼표) 뒤"
     if not cands:
-        cands = starts or [i for i in range(n - 1) if atoms[i + 1].gap_before > 0.25 * atoms[i].band.h]
+        # 원본 줄 끝(= 다음 줄 첫 조각 바로 앞)에서 끊는다 (원본이 세 줄 이상인 제목 — kimchi)
+        cands = [s_ - 1 for s_ in starts] or [i for i in range(n - 1) if atoms[i + 1].gap_before > 0.25 * atoms[i].band.h]
         reason = "문장부호가 없어 원본 줄바꿈/띄어쓰기 위치"
     if not cands:
         return None, "끊을 위치를 찾지 못함 (한 줄로 배치)"
