@@ -121,11 +121,24 @@ def regroup_wide(img: np.ndarray, page: Page, width: int, ch: int) -> np.ndarray
     out[:] = page.paper_rgb
     pad = 2
     first, last = groups[0], groups[-1]
+
+    def top_aligned(x0_, x1_):
+        # 각 무리를 맨 위로 올려 매체명과 날짜·면의 윗선을 맞춘다 (kimchi 피드백, captain)
+        piece = img[:, x0_:x1_]
+        ys = np.flatnonzero(ink[:, x0_:x1_].any(axis=1))
+        if not ys.size:
+            return piece
+        moved = np.empty_like(piece)
+        moved[:] = page.paper_rgb
+        moved[: piece.shape[0] - ys[0]] = piece[ys[0] :]
+        return moved
+
+    top0 = int(np.flatnonzero(ink.any(axis=1))[0]) if ink.any() else 0
     # 그림 가장자리에 닿은 글자도 안전하게 (lowsugar 처럼 x=0 에서 시작하는 매체명 — jelly)
-    a = img[:, max(0, first[0] - pad) : min(img.shape[1], first[1] + pad)]
-    out[:, : a.shape[1]] = a
-    b = img[:, max(0, last[0] - pad) : min(img.shape[1], last[1] + pad)]
-    out[:, width - b.shape[1] :] = b
+    a = top_aligned(max(0, first[0] - pad), min(img.shape[1], first[1] + pad))
+    out[top0:, : a.shape[1]] = a[: img.shape[0] - top0]
+    b = top_aligned(max(0, last[0] - pad), min(img.shape[1], last[1] + pad))
+    out[top0:, width - b.shape[1] :] = b[: img.shape[0] - top0]
     mids = groups[1:-1]
     if mids:
         mw = mids[-1][1] - mids[0][0]
@@ -650,6 +663,12 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
 
     header = strip_rules(src.crop_rgb(page.clip(layout.header)), page.threshold) if layout.header else None
     if header is not None:
+        if min(page.paper_rgb) < 235:
+            # 지면 바탕이 색 상자(연살구 등)이고 머리 줄은 흰 바탕일 때, 흰 바탕을 지면 색으로 (captain)
+            hw = header.astype(np.int16)
+            white = (hw.min(axis=2) > 225) & ((hw.max(axis=2) - hw.min(axis=2)) < 20)
+            header = header.copy()
+            header[white] = page.paper_rgb
         header = regroup_wide(header, page, W - 2 * margin, char_h)
         header, s = _fit_width(header, W - 2 * margin)
         if s:
