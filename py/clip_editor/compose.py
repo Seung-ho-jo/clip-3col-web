@@ -698,6 +698,19 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 top_off[0] += h_
                 top_off[1] += h_
         cols = pack_columns(items, opt.columns, [r + t for r, t in zip(res, top_off)])
+        # 각 단 첫 조각(본문 줄·부제·문패)의 첫 잉크 줄을 같은 높이로 맞춘다 — 조각마다 위 여백이 달라
+        # 단 꼭대기가 들쭉날쭉해 보이던 것 (11/6 피드백)
+        def ink_top(img):
+            rows = np.flatnonzero((to_ink(img, page.threshold) | (np.asarray(Image.fromarray(img).convert("L")) < 235)).any(axis=1))
+            return int(rows[0]) if rows.size else 0
+
+        tops = {ci: ink_top(c[0].img) for ci, c in enumerate(cols) if c and top_off[ci] == 0}
+        span_tops = [ink_top(b.img) for b, dy in spans if dy == 0]
+        target = max(list(tops.values()) + span_tops, default=0)
+        top_off = list(top_off)
+        for ci, t in tops.items():
+            top_off[ci] += target - t
+        spans = [(b, dy + (target - ink_top(b.img) if dy == 0 else 0)) for b, dy in spans]
         offs["top"] = top_off
         y = margin
         layout_plan: list[tuple[str, np.ndarray, int, int]] = []
