@@ -101,6 +101,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 .join .seg button { border: 0; border-radius: 0; padding: 4px 9px; font-size: 0.82rem; }
 .join .seg button[aria-pressed="true"] { background: var(--blue); color: var(--sheet); }
 .join .id { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
+.edit-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+.edit-bar .sep { width: 1px; align-self: stretch; background: var(--rule); margin: 0 2px; }
+.edit-bar button { padding: 4px 9px; font-size: 0.84rem; }
+.edit-bar button[aria-pressed="true"] { background: var(--blue); color: var(--sheet); border-color: var(--blue); }
+.edit-bar .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+#edit-canvas { display: block; margin: 0 auto; max-width: 100%; touch-action: none; cursor: crosshair; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+.batch-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.batch-list li { display: grid; grid-template-columns: 44px minmax(0,1fr) auto; gap: 8px; align-items: center; font-size: 0.85rem; border-bottom: 1px dotted var(--rule); padding-bottom: 6px; }
+.batch-list img { width: 44px; height: 44px; object-fit: cover; object-position: top; border: 1px solid var(--rule); background: #fff; }
+.batch-list .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-list button { padding: 3px 8px; font-size: 0.8rem; }
 .err { color: var(--bad); background: var(--bad-soft); border-radius: 5px; padding: 8px 10px; font-size: 0.88rem; margin: 0; }
 </style>
 
@@ -151,6 +162,14 @@ button:disabled { opacity: 0.5; cursor: default; }
         </div>
         <p class="note" id="save-note">지면을 처리하면 저장할 수 있습니다. 파일은 브라우저의 다운로드 폴더에 저장됩니다.</p>
       </section>
+      <section class="panel" aria-labelledby="h-batch">
+        <h2 id="h-batch">5. 여러 장 한꺼번에 (PNG)</h2>
+        <p class="note">기사 이미지를 여러 장 고르면 자동으로 차례차례 편집해 PNG로 만듭니다. 자동 감지가 틀린 기사는 한 장씩 올려 '영역 고치기'로 고치세요.</p>
+        <button id="batch-pick" type="button" disabled>이미지 여러 장 고르기</button>
+        <input id="batch-file" type="file" accept="image/*" multiple hidden>
+        <ul class="batch-list" id="batch-list"></ul>
+        <button id="batch-save" type="button" hidden>PNG 모두 저장</button>
+      </section>
     </aside>
 
     <main class="stage">
@@ -159,9 +178,24 @@ button:disabled { opacity: 0.5; cursor: default; }
         <button role="tab" id="t-annot" aria-selected="false" type="button">다시 짠 줄 표시</button>
         <button role="tab" id="t-detect" aria-selected="false" type="button">감지한 영역</button>
         <button role="tab" id="t-orig" aria-selected="false" type="button">원본</button>
+        <button role="tab" id="t-edit" aria-selected="false" type="button" disabled>영역 고치기</button>
         <span class="pill ex" id="ex-badge">예시 지면 결과</span>
       </div>
-      <div class="viewer"><img id="view" src="example/sample_3col.jpg" alt="3단 편집본"></div>
+      <div class="viewer">
+        <img id="view" src="example/sample_3col.jpg" alt="3단 편집본">
+        <div id="editor" hidden>
+          <div class="edit-bar" id="edit-types" role="toolbar" aria-label="영역 종류"></div>
+          <div class="edit-bar">
+            <button id="ed-new" type="button" aria-pressed="false">＋ 새 영역 그리기</button>
+            <button id="ed-del" type="button" disabled>선택 영역 지우기</button>
+            <span class="sep"></span>
+            <button id="ed-reset" type="button">자동 감지로 되돌리기</button>
+            <button id="ed-apply" class="primary" type="button">고친 영역으로 다시 짜기</button>
+          </div>
+          <p class="note" id="ed-hint">상자를 눌러 고르고, 끌어서 옮기거나 모서리를 끌어 크기를 바꾸세요. 고른 상자의 종류는 위 단추로 바꿉니다. 새 영역은 '＋ 새 영역 그리기'를 누른 뒤 원본 위에 끌어 그립니다.</p>
+          <canvas id="edit-canvas"></canvas>
+        </div>
+      </div>
       <article class="report" id="report">
         <h1>보고서</h1>
         <ul><li>예시 지면(테스트용으로 만든 가짜 기사)을 3단으로 편집한 결과입니다. 왼쪽에서 실제 지면 이미지를 올려 보세요.</li></ul>
@@ -183,6 +217,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   }
   function setBusy(b) {
     state.busy = b;
+    if ($("batch-pick")) $("batch-pick").disabled = b || !state.ready;
+    if ($("ed-apply")) $("ed-apply").disabled = b;
     $("try-sample").disabled = b || !state.ready;
     $("rebuild").disabled = b || !state.out || !Object.keys(state.joins).length;
   }
@@ -197,12 +233,17 @@ button:disabled { opacity: 0.5; cursor: default; }
       $(id).setAttribute("aria-selected", String(key === name));
       $(id).disabled = !state.images[key];
     }
-    $("view").src = state.images[name] || state.images.result;
+    $("t-edit").setAttribute("aria-selected", String(name === "edit"));
+    $("t-edit").disabled = !state.out || !state.images.orig;
+    $("editor").hidden = name !== "edit";
+    $("view").hidden = name === "edit";
+    if (name !== "edit") $("view").src = state.images[name] || state.images.result;
   }
   $("t-result").onclick = () => showTab("result");
   $("t-annot").onclick = () => showTab("annotated");
   $("t-detect").onclick = () => showTab("detect");
   $("t-orig").onclick = () => showTab("orig");
+  $("t-edit").onclick = () => showTab("edit");
   showTab("result");
 
   function renderReport(md) {
@@ -281,17 +322,25 @@ button:disabled { opacity: 0.5; cursor: default; }
     renderReport(out.report_md);
     if (fresh) state.joins = {};
     renderJoins(out.joins);
-    showTab(state.tab === "orig" || state.tab === "detect" ? state.tab : "result");
+    loadEditor(out.layout_json, fresh);
+    showTab(["orig", "detect", "edit"].includes(state.tab) ? state.tab : "result");
     for (const id of ["save-jpg", "save-png", "save-md", "save-json"]) $(id).disabled = false;
   }
 
   worker.onmessage = (ev) => {
     const m = ev.data;
     if (m.type === "status") setStatus(m.text, "busy");
-    else if (m.type === "ready") { state.ready = true; setStatus("준비됐습니다. 지면 이미지를 올려 주세요.", "done"); setBusy(false); }
+    else if (m.type === "ready") {
+      state.ready = true;
+      if (!state.busy) { setStatus("준비됐습니다. 지면 이미지를 올려 주세요.", "done"); setBusy(false); nextBatch(); }
+      else $("batch-pick").disabled = true;
+    }
+    else if (m.type === "result" && m.kind === "png") batchResult(m.data);
+    else if (m.type === "error" && batch.running) batchError(m.message);
     else if (m.type === "result") {
       setBusy(false);
       showResult(m.data, m.kind === "process");
+      nextBatch();
       setStatus(m.data.ok ? "다 짰습니다. 검증을 통과했습니다." : "다 짰습니다. 검증 결과를 확인해 주세요.", m.data.ok ? "done" : "fail");
     } else if (m.type === "error") {
       setBusy(false);
@@ -300,6 +349,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   };
   worker.onerror = (e) => { setStatus("프로그램을 불러오지 못했습니다: " + (e.message || "알 수 없는 오류"), "fail"); };
   setBusy(true);
+  state.busy = false;  // 준비 중에도 올리기는 받는다 (준비가 끝나면 바로 시작)
   worker.postMessage({ type: "init" });
 
   async function run(file, name) {
@@ -333,6 +383,232 @@ button:disabled { opacity: 0.5; cursor: default; }
     if (state.busy || !state.out) return;
     setBusy(true);
     worker.postMessage({ type: "rebuild", joins: { ...state.joins } });
+  };
+
+
+  // ── 영역 고치기 ─────────────────────────────────────────────
+  const ROLES = [
+    ["title", "제목", "#d0312d"], ["header", "매체명·날짜", "#7b3fa0"],
+    ["text", "본문", "#1d57b8"], ["wrap", "사진 옆 본문", "#e07b00"],
+    ["subtitle", "부제·요약", "#0e8a8a"], ["series", "문패", "#0e8a8a"], ["byline", "기자명", "#0e8a8a"],
+    ["graphic", "도표", "#1d7a46"], ["photo", "사진", "#5a8f1d"], ["portrait", "인물(뺌)", "#8a8f1d"],
+    ["footer", "크기 표기(뺌)", "#888888"],
+  ];
+  const COLOR = Object.fromEntries(ROLES.map(([k, , c]) => [k, c]));
+  const ed = { boxes: [], sel: -1, drag: null, newMode: false, img: null, scale: 1, base: null };
+
+  function roleOf(f) {
+    if (f.type === "text") return f.wrap ? "wrap" : "text";
+    if (f.type === "image") return f.kind || "photo";
+    return ["subtitle", "series", "byline"].includes(f.label) ? f.label : "subtitle";
+  }
+  function layoutToBoxes(L) {
+    const out = [];
+    if (L.header) out.push({ role: "header", r: [...L.header] });
+    if (L.title) out.push({ role: "title", r: [...L.title] });
+    if (L.footer) out.push({ role: "footer", r: [...L.footer] });
+    L.flow.forEach((f, i) => out.push({ role: roleOf(f), r: [...f.rect], order: i, src: f }));
+    return out;
+  }
+  function boxesToLayout() {
+    const L = { ...ed.base, header: null, title: null, footer: null, flow: [] };
+    const flowBoxes = [];
+    for (const b of ed.boxes) {
+      const r = b.r.map(Math.round);
+      if (b.role === "header" || b.role === "title" || b.role === "footer") { if (!L[b.role]) L[b.role] = r; continue; }
+      flowBoxes.push(b);
+    }
+    flowBoxes.sort((a, b) => a.order - b.order);
+    for (const b of flowBoxes) {
+      const r = b.r.map(Math.round);
+      if (b.role === "text" || b.role === "wrap") L.flow.push({ type: "text", rect: r, wrap: b.role === "wrap" });
+      else if (["graphic", "photo", "portrait"].includes(b.role)) L.flow.push({ type: "image", rect: r, kind: b.role });
+      else L.flow.push({ type: "block", rect: r, label: b.role });
+    }
+    return L;
+  }
+  // 새 상자의 읽는 순서: 같은 단(가로 위치가 겹치는 본문)에서 위에서부터 들어갈 자리
+  function orderFor(r) {
+    const flow = ed.boxes.filter((b) => b.order !== undefined).sort((a, b) => a.order - b.order);
+    const cx = (r[0] + r[2]) / 2;
+    let at = null;
+    for (const b of flow) {
+      const sameCol = b.r[0] <= cx && cx <= b.r[2];
+      if (sameCol && b.r[1] > r[1]) { at = b.order; break; }
+    }
+    if (at === null) {
+      const left = flow.filter((b) => (b.r[0] + b.r[2]) / 2 <= cx);
+      at = left.length ? left[left.length - 1].order + 0.5 : (flow.length ? flow[0].order - 0.5 : 0);
+    } else at -= 0.5;
+    return at;
+  }
+  function renumber() {
+    ed.boxes.filter((b) => b.order !== undefined).sort((a, b) => a.order - b.order).forEach((b, i) => (b.order = i));
+  }
+
+  const cv = $("edit-canvas"), cx2 = cv.getContext("2d");
+  function draw() {
+    if (!ed.img) return;
+    cx2.clearRect(0, 0, cv.width, cv.height);
+    cx2.drawImage(ed.img, 0, 0);
+    const lw = Math.max(2, Math.round(2 / ed.scale));
+    ed.boxes.forEach((b, i) => {
+      const [x0, y0, x1, y1] = b.r, c = COLOR[b.role] || "#333";
+      cx2.lineWidth = i === ed.sel ? lw * 2 : lw;
+      cx2.strokeStyle = c; cx2.fillStyle = c + (i === ed.sel ? "33" : "14");
+      cx2.fillRect(x0, y0, x1 - x0, y1 - y0); cx2.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      const label = (b.order !== undefined ? b.order + 1 + " " : "") + ROLES.find((r) => r[0] === b.role)[1];
+      cx2.font = `${Math.round(14 / ed.scale)}px sans-serif`;
+      const tw = cx2.measureText(label).width + 8 / ed.scale;
+      cx2.fillStyle = c; cx2.fillRect(x0, y0, tw, 18 / ed.scale);
+      cx2.fillStyle = "#fff"; cx2.fillText(label, x0 + 4 / ed.scale, y0 + 14 / ed.scale);
+      if (i === ed.sel) {
+        const h = 7 / ed.scale;
+        for (const [hx, hy] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) { cx2.fillStyle = c; cx2.fillRect(hx - h, hy - h, 2 * h, 2 * h); }
+      }
+    });
+    if (ed.drag && ed.drag.mode === "new") {
+      const [a, b] = [ed.drag.start, ed.drag.cur];
+      cx2.setLineDash([8 / ed.scale, 6 / ed.scale]); cx2.strokeStyle = "#1d57b8"; cx2.lineWidth = lw;
+      cx2.strokeRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+      cx2.setLineDash([]);
+    }
+    $("ed-del").disabled = ed.sel < 0;
+    for (const btn of $("edit-types").children) btn.setAttribute("aria-pressed", String(ed.sel >= 0 && btn.dataset.role === ed.boxes[ed.sel].role));
+  }
+  function pt(ev) {
+    const rc = cv.getBoundingClientRect();
+    return [(ev.clientX - rc.left) * (cv.width / rc.width), (ev.clientY - rc.top) * (cv.height / rc.height)];
+  }
+  cv.addEventListener("pointerdown", (ev) => {
+    const p = pt(ev), tol = 10 / ed.scale;
+    cv.setPointerCapture(ev.pointerId);
+    if (ed.newMode) { ed.drag = { mode: "new", start: p, cur: p }; return; }
+    if (ed.sel >= 0) {
+      const r = ed.boxes[ed.sel].r;
+      const corners = [[0, 1], [2, 1], [0, 3], [2, 3]];
+      for (const [ix, iy] of corners) {
+        if (Math.abs(p[0] - r[ix]) < tol && Math.abs(p[1] - r[iy]) < tol) { ed.drag = { mode: "resize", ix, iy, p0: p, r0: [...r] }; return; }
+      }
+    }
+    const hits = ed.boxes.map((b, i) => [i, b]).filter(([, b]) => b.r[0] <= p[0] && p[0] <= b.r[2] && b.r[1] <= p[1] && p[1] <= b.r[3]);
+    hits.sort((a, b) => (a[1].r[2] - a[1].r[0]) * (a[1].r[3] - a[1].r[1]) - (b[1].r[2] - b[1].r[0]) * (b[1].r[3] - b[1].r[1]));
+    ed.sel = hits.length ? hits[0][0] : -1;
+    if (ed.sel >= 0) ed.drag = { mode: "move", p0: p, r0: [...ed.boxes[ed.sel].r] };
+    draw();
+  });
+  cv.addEventListener("pointermove", (ev) => {
+    if (!ed.drag) return;
+    const p = pt(ev), d = ed.drag;
+    if (d.mode === "new") d.cur = p;
+    else {
+      const b = ed.boxes[ed.sel], dx = p[0] - d.p0[0], dy = p[1] - d.p0[1];
+      if (d.mode === "move") b.r = [d.r0[0] + dx, d.r0[1] + dy, d.r0[2] + dx, d.r0[3] + dy];
+      else { b.r = [...d.r0]; b.r[d.ix] += dx; b.r[d.iy] += dy; }
+      b.r = [Math.min(b.r[0], b.r[2]), Math.min(b.r[1], b.r[3]), Math.max(b.r[0], b.r[2]), Math.max(b.r[1], b.r[3])];
+      b.r = [Math.max(0, b.r[0]), Math.max(0, b.r[1]), Math.min(cv.width, b.r[2]), Math.min(cv.height, b.r[3])];
+    }
+    draw();
+  });
+  cv.addEventListener("pointerup", () => {
+    const d = ed.drag; ed.drag = null;
+    if (d && d.mode === "new") {
+      const r = [Math.min(d.start[0], d.cur[0]), Math.min(d.start[1], d.cur[1]), Math.max(d.start[0], d.cur[0]), Math.max(d.start[1], d.cur[1])];
+      if (r[2] - r[0] > 6 && r[3] - r[1] > 6) {
+        ed.boxes.push({ role: "text", r, order: orderFor(r) }); renumber();
+        ed.sel = ed.boxes.length - 1;
+      }
+      ed.newMode = false; $("ed-new").setAttribute("aria-pressed", "false");
+    }
+    draw();
+  });
+  for (const [k, name, c] of ROLES) {
+    const b = document.createElement("button"); b.type = "button"; b.dataset.role = k;
+    const sw = document.createElement("span"); sw.className = "sw"; sw.style.background = c;
+    b.append(sw, name);
+    b.onclick = () => {
+      if (ed.sel < 0) return;
+      const box = ed.boxes[ed.sel], special = ["header", "title", "footer"];
+      if (special.includes(k)) { ed.boxes.forEach((o, i) => { if (i !== ed.sel && o.role === k) o.role = "subtitle"; }); delete box.order; }
+      else if (box.order === undefined) box.order = orderFor(box.r);
+      box.role = k; renumber(); draw();
+    };
+    $("edit-types").append(b);
+  }
+  $("ed-new").onclick = () => { ed.newMode = !ed.newMode; $("ed-new").setAttribute("aria-pressed", String(ed.newMode)); };
+  $("ed-del").onclick = () => { if (ed.sel >= 0) { ed.boxes.splice(ed.sel, 1); ed.sel = -1; renumber(); draw(); } };
+  document.addEventListener("keydown", (e) => {
+    if ($("editor").hidden || ed.sel < 0 || !["Delete", "Backspace"].includes(e.key)) return;
+    if (e.target.closest && e.target.closest("input,textarea")) return;
+    e.preventDefault(); $("ed-del").onclick();
+  });
+  $("ed-reset").onclick = () => { if (ed.auto) { ed.boxes = layoutToBoxes(ed.auto); ed.sel = -1; draw(); } };
+  $("ed-apply").onclick = () => {
+    if (state.busy || !ed.base) return;
+    setBusy(true);
+    setStatus("고친 영역으로 다시 짜는 중", "busy");
+    worker.postMessage({ type: "relayout", json: JSON.stringify(boxesToLayout()) });
+  };
+  function loadEditor(layoutJson, fresh) {
+    const L = JSON.parse(layoutJson);
+    ed.base = L;
+    if (fresh) ed.auto = L;
+    ed.boxes = layoutToBoxes(L); ed.sel = -1;
+    if (!state.images.orig) return;
+    const im = new Image();
+    im.onload = () => { ed.img = im; cv.width = im.naturalWidth; cv.height = im.naturalHeight; ed.scale = Math.min(1, 900 / im.naturalWidth); draw(); };
+    im.src = state.images.orig;
+  }
+
+  // ── 여러 장 한꺼번에 (PNG) ──────────────────────────────────
+  const batch = { queue: [], done: [], running: false };
+  $("batch-pick").onclick = () => $("batch-file").click();
+  $("batch-file").addEventListener("change", () => {
+    const files = [...$("batch-file").files].filter((f) => f.type.startsWith("image/"));
+    $("batch-file").value = "";
+    for (const f of files) {
+      const li = document.createElement("li");
+      const th = document.createElement("img"); th.alt = "";
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = f.name + " · 대기";
+      const sv = document.createElement("button"); sv.type = "button"; sv.textContent = "저장"; sv.disabled = true;
+      li.append(th, nm, sv); $("batch-list").append(li);
+      batch.queue.push({ file: f, li, th, nm, sv });
+    }
+    nextBatch();
+  });
+  async function nextBatch() {
+    if (batch.running || state.busy || !state.ready) return;
+    const job = batch.queue.shift();
+    if (!job) {
+      if (batch.active) { batch.active = false; setStatus(`여러 장 편집을 마쳤습니다 (${batch.done.length}장).`, "done"); }
+      return;
+    }
+    batch.running = true; batch.active = true; batch.cur = job; setBusy(true);
+    job.nm.textContent = job.file.name + " · 편집 중";
+    setStatus(`여러 장 편집 중: ${job.file.name} (남은 ${batch.queue.length}장)`, "busy");
+    const buf = new Uint8Array(await job.file.arrayBuffer());
+    worker.postMessage({ type: "png", bytes: buf, name: job.file.name }, [buf.buffer]);
+  }
+  function batchResult(out) {
+    const job = batch.cur; batch.running = false; batch.cur = null; setBusy(false);
+    const name = job.file.name.replace(/\.[^.]+$/, "") + "_3단.png";
+    const blob = new Blob([out.png], { type: "image/png" });
+    const url = URL.createObjectURL(blob);
+    job.th.src = url;
+    job.nm.textContent = `${job.file.name} · ${out.ok ? "통과" : "확인 필요"}`;
+    job.nm.style.color = out.ok ? "" : "var(--bad)";
+    job.sv.disabled = false; job.sv.onclick = () => save(name, blob);
+    batch.done.push({ name, blob });
+    $("batch-save").hidden = false;
+    nextBatch();
+  }
+  function batchError(msg) {
+    const job = batch.cur; batch.running = false; batch.cur = null; setBusy(false);
+    job.nm.textContent = job.file.name + " · 실패: " + msg; job.nm.style.color = "var(--bad)";
+    nextBatch();
+  }
+  $("batch-save").onclick = async () => {
+    for (const d of batch.done) { await save(d.name, d.blob); await new Promise((r) => setTimeout(r, 450)); }
   };
 
   // 저장: 일반 웹페이지에서는 브라우저 다운로드로 저장한다

@@ -1,7 +1,7 @@
 // Runs the clip_editor Python package inside the browser (Pyodide), off the page's main thread.
 const PY_FILES = [
   "__init__.py", "imageops.py", "layout.py", "textflow.py", "title.py",
-  "detect.py", "compose.py", "report.py", "web.py",
+  "detect.py", "compose.py", "chartclean.py", "report.py", "web.py",
 ];
 const base = new URL("./", self.location.href).href;
 let py = null;
@@ -53,6 +53,12 @@ self.onmessage = async (ev) => {
     if (msg.type === "process") {
       status("지면을 분석하고 3단으로 짜는 중 (보통 10~40초)", 4);
       out = toPlain(web.process(msg.bytes, msg.name));
+    } else if (msg.type === "relayout") {
+      status("고친 영역으로 다시 짜는 중", 4);
+      out = toPlain(web.rebuild_layout(msg.json));
+    } else if (msg.type === "png") {
+      status("여러 장 편집 중: " + msg.name, 4);
+      out = toPlain(web.process_png(msg.bytes, msg.name));
     } else if (msg.type === "rebuild") {
       status("띄어쓰기를 반영해 다시 짜는 중", 4);
       const joins = py.toPy(msg.joins);

@@ -627,6 +627,13 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                 if i in dropped:
                     continue
                 crop = image_crop(r, f)
+                if f.kind == "graphic" and crop.shape[1] > 1.3 * cw:
+                    from .chartclean import strip_edge_photo
+
+                    cleaned = strip_edge_photo(crop, m.char_h)
+                    if cleaned is not None and cleaned.shape[1] < 0.95 * crop.shape[1]:
+                        report["notes"].append(f"graphic(flow[{i}]) 뒤에 깔린 사진을 지우고 도표만 남김")
+                        crop = cleaned
                 if crop.shape[1] > W - 2 * margin and f.kind == "graphic":
                     trimmed = trim_photo_edge(crop, W - 2 * margin)
                     if trimmed is not None:

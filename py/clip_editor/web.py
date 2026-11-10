@@ -93,6 +93,14 @@ def _run(layout, preview: Image.Image | None) -> dict:
     return out
 
 
+def _load(image_bytes) -> str:
+    if hasattr(image_bytes, "to_py"):  # Pyodide: JS Uint8Array → memoryview
+        image_bytes = image_bytes.to_py()
+    path = os.path.join(tempfile.mkdtemp(), "page.png")
+    Image.open(io.BytesIO(bytes(image_bytes))).convert("RGB").save(path)
+    return path
+
+
 def process(image_bytes: bytes, filename: str = "page.jpg") -> dict:
     if hasattr(image_bytes, "to_py"):  # Pyodide: JS Uint8Array → memoryview
         image_bytes = image_bytes.to_py()
@@ -111,3 +119,24 @@ def rebuild(joins: dict) -> dict:
     layout = _state["layout"]
     layout.joins = {str(k): bool(v) for k, v in (joins or {}).items()}
     return _run(layout, None)
+
+
+def rebuild_layout(layout_json: str) -> dict:
+    """화면에서 상자를 고친 레이아웃(JSON 문자열)으로 다시 짠다."""
+    from .layout import Layout
+
+    d = json.loads(str(layout_json))
+    d["image"] = _state["layout"].image
+    layout = Layout.from_json(d)
+    _state["layout"] = layout
+    return _run(layout, None)
+
+
+def process_png(image_bytes: bytes, filename: str = "page.jpg") -> dict:
+    """여러 장 한꺼번에: 자동 감지 → 편집본 PNG 와 검증 결과만 돌려준다."""
+    path = _load(image_bytes)
+    layout, _ = detect(path)
+    res = build(layout, Options())
+    v = res.report["verification"]
+    return {"png": _png(res.image), "ok": bool(v["ok"]), "size": [res.image.width, res.image.height],
+            "removed": len(res.report["removed"]), "repacked": len(res.report["repacked"])}
