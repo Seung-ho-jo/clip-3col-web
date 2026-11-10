@@ -483,10 +483,27 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
         trow = max(rows, key=lambda row: np.median([info[b]["lh"] for b in row]) * sum(b.w for b in row))
         title = _unite(trow)
         for b in leaves:
-            if b not in trow and b.overlaps_y(title) > 0.5 * b.h and info[b]["n"] <= 1:
+            # 같은 줄에 있는 글자 조각은 제목의 일부다. 색·크기가 다른 낱말('술술')이 제목보다 커서
+            # 두 줄처럼 세어져도, 제목 높이를 거의 다 덮고 옆에 붙어 있으면 합친다 (zero)
+            side = min(abs(b.x0 - title.x1), abs(title.x0 - b.x1)) if b.overlaps_x(title) <= 0 else 0
+            covers = title.overlaps_y(b) > 0.8 * title.h and side < 3 * title.h and b.h < 2.2 * title.h
+            if b not in trow and ((b.overlaps_y(title) > 0.5 * b.h and info[b]["n"] <= 1) or covers):
+                title = _union(title, b)
+                trow.append(b)
+        # 제목 낱말 사이 빈칸에 들어 있는 조각(색이 달라 여러 쪽으로 잘린 '술술' 등)도 제목이다 (zero)
+        for b in list(leaves):
+            if b in trow or any(b.overlaps_x(t) > 0 for t in trow):
+                continue
+            if (title.x0 <= b.x0 and b.x1 <= title.x1 and b.y0 >= title.y0 - 0.6 * title.h
+                    and b.y1 <= title.y1 + 0.6 * title.h):
                 title = _union(title, b)
                 trow.append(b)
         leaves = [b for b in leaves if b not in trow]
+
+    # 제목 줄 안에 들어간 '그림'은 굵은 제목 글자를 그림으로 잘못 본 것이다 ('중동' — orion)
+    if title is not None:
+        images = [(r, k) for r, k in images
+                  if not (r.overlaps_x(title) * r.overlaps_y(title) > 0.6 * r.w * r.h and r.h < 1.5 * title.h)]
 
     # 머리 괘선이 없어도 지면 맨 위에 왼쪽 매체명·오른쪽 날짜·면이 있으면 그 둘이 머리 줄이다 (lowsugar)
     if header is None and title is not None:
@@ -750,6 +767,16 @@ def detect(path: str) -> tuple[Layout, Image.Image]:
         for f in flow:
             if f.type == "block" and f.label == "byline" and f.rect.overlaps_y(r) > 0 and min(abs(f.rect.x1 - r.x0), abs(r.x1 - f.rect.x0)) < 8 * ch:
                 f.type, f.kind, f.note = "image", "portrait", "인물사진 설명"
+
+    # 제목 바로 아래 작은 한 줄 꼬리표(〈2030년〉, 〈한화M&S 사장〉)는 제목이 아니라 아래 사진·도표의 설명이다.
+    # 본문 단에 섞이지 않게 뺀다 (orion, benson, nongshim)
+    if title is not None:
+        def _under_title_label(f):
+            r = f.rect
+            return (f.type == "block" and r.y0 >= title.y1 - 2 and r.y0 - title.y1 < 0.6 * title.h
+                    and r.h < 0.6 * title.h and r.w < 0.25 * page.w
+                    and len(detect_line_runs(tpage, r)) <= 1)
+        flow = [f for f in flow if not _under_title_label(f)]
 
     # 블록 안에 통째로 들어 있는 그림은 블록으로 이미 붙으므로 따로 넣지 않는다(중복 방지)
     blocks_r = [f.rect for f in flow if f.type == "block"]
