@@ -165,7 +165,13 @@ def build_title(page: Page, rect: Rect, body_char_h: int, max_width: int, area_r
     atoms, char_h = title_atoms(page, rect)
     gaps = [a.gap_before for a in atoms if not a.line_start]
     space = int(np.median([g for g in gaps if g > 0.2 * char_h])) if any(g > 0.2 * char_h for g in gaps) else int(0.3 * char_h)
-    brk, reason = choose_break(atoms, space, manual_break)
+    target = math.sqrt(area_ratio) * body_char_h
+    one_line = [atoms[0]] + atoms[1:]
+    if manual_break is None and _row_width(one_line, space) * (target / char_h) <= max_width:
+        # 지금 크기(본문의 약 7배) 그대로 3단 폭 안에 한 줄로 들어가면 두 줄로 나누지 않는다 (2026-11-10 피드백)
+        brk, reason = None, "3단 폭에 한 줄로 들어가 나누지 않음"
+    else:
+        brk, reason = choose_break(atoms, space, manual_break)
     if brk is None:
         rows = [atoms]
     else:
@@ -173,7 +179,6 @@ def build_title(page: Page, rect: Rect, body_char_h: int, max_width: int, area_r
         # 끊은 자리 다음 줄 첫 글자는 새 줄의 시작으로 취급(앞 공백 제거)
         rows[1] = [TitleAtom(**{**rows[1][0].__dict__, "line_start": True, "gap_before": 0})] + rows[1][1:]
     rendered = [render_row(page, r, space) for r in rows]
-    target = math.sqrt(area_ratio) * body_char_h
     scale = target / char_h
     notes = []
     widest = max(r.shape[1] for r in rendered)
