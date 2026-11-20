@@ -639,7 +639,11 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
                     if trimmed is not None:
                         report["notes"].append(f"graphic(flow[{i}]) 가장자리의 사진 부분을 잘라 3단 폭에 맞춤")
                         crop = trimmed
-                if crop.shape[1] >= opt.wide_ratio * cw or (f.kind == "graphic" and crop.shape[1] > 1.3 * cw):
+                # 단 안에 넣으려면 70% 아래로 줄여야 하는 넓은 사진도 3단 아래로 (xmas — 나란히 놓인 사진 2장)
+                wide_photo = f.kind == "photo" and crop.shape[1] > cw / 0.7 and any(
+                    o is not f and o.type == "image" and o.kind == "photo" and abs(o.rect.y0 - f.rect.y0) < m.char_h
+                    and abs(o.rect.y1 - f.rect.y1) < 2 * m.char_h for o in flow)
+                if crop.shape[1] >= opt.wide_ratio * cw or (f.kind == "graphic" and crop.shape[1] > 1.3 * cw) or wide_photo:
                     # 단 1개에 넣으려면 많이 줄여야 하는 도표도 2단 빈자리로 (outdoor)
                     # 여러 단에 걸친 넓은 그림은 단 안에 줄여 넣지 않고 3단 아래에 전체 폭으로 둔다
                     if i in shrink:
@@ -686,8 +690,31 @@ def build(layout: Layout, opt: Options | None = None) -> Result:
 
     offs: dict = {"top": [0] * opt.columns}
 
+    def pair_side_by_side() -> None:
+        """3단 아래에 갈 그림 둘이 높이가 비슷하고 나란히 3단 폭에 들어가면 한 줄로 붙인다 (xmas)."""
+        k = 0
+        while k + 1 < len(bottom):
+            a_, b_ = bottom[k], bottom[k + 1]
+            ha, hb = a_.img.shape[0], b_.img.shape[0]
+            avail = W - 2 * margin
+            tot = a_.img.shape[1] + b_.img.shape[1] + gutter
+            if abs(ha - hb) <= 0.15 * max(ha, hb) and tot <= 1.1 * avail:
+                if tot > avail:  # 10% 이내로 넘치면 둘 다 살짝 줄여 나란히
+                    s_ = (avail - gutter) / (tot - gutter)
+                    a_ = Item("image", resize(a_.img, int(a_.img.shape[1] * s_), int(ha * s_)), a_.ids, label=a_.label)
+                    b_ = Item("image", resize(b_.img, int(b_.img.shape[1] * s_), int(hb * s_)), b_.ids, label=b_.label)
+                    ha, hb = a_.img.shape[0], b_.img.shape[0]
+                h_ = max(ha, hb)
+                row = np.empty((h_, a_.img.shape[1] + gutter + b_.img.shape[1], 3), dtype=np.uint8)
+                row[:] = page.paper_rgb
+                row[:ha, : a_.img.shape[1]] = a_.img
+                row[:hb, a_.img.shape[1] + gutter :] = b_.img
+                bottom[k : k + 2] = [Item("image", row, a_.ids + b_.ids, label=a_.label)]
+            k += 1
+
     def assemble(include_photos: bool):
         items, top_blocks, pre_title = make_items(include_photos)
+        pair_side_by_side()
         # 단 2개 폭 그림은 마지막 두 단 아래에 자리를 미리 비워 두고 글을 흘린다 (첫 단이 가장 길어짐)
         two_ = 2 * cw + gutter
         res = [0] * opt.columns

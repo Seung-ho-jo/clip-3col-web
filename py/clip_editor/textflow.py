@@ -226,6 +226,20 @@ def segment_atoms(page: Page, regions: list[Region], m: Metrics) -> None:
             sub = page.ink[b.y0 : b.y1, b.x0 : b.x1]
             col = sub.any(axis=0)
             pieces = split_wide(runs(col, min_gap=0), sub.sum(axis=0), syl_w)
+            # 좁은 조각(ㅁ) 뒤에 다음 글자와 붙은 넓은 조각(ㅏ스)이 오면, 넓은 조각을 갈라 앞부분을 좁은 조각에 붙인다
+            # ('마스'가 'ㅁ|ㅏ스'로 나뉘어 줄 끝에서 '마'가 쪼개지던 것 — xmas)
+            colsum = sub.sum(axis=0)
+            k = 0
+            while k + 1 < len(pieces):
+                (p0, p1), (q0, q1) = pieces[k], pieces[k + 1]
+                if p1 - p0 < 0.75 * syl_w and q0 - p1 <= merge_gap and q1 - q0 > 1.15 * syl_w:
+                    lo, hi = q0 + 2, int(min(q1 - 0.6 * syl_w, p0 + 1.25 * syl_w)) + 1
+                    if hi > lo:
+                        c = lo + int(np.argmin(colsum[lo:hi]))
+                        pieces[k + 1 : k + 2] = [(q0, c), (c, q1)]
+                        k += 2
+                        continue
+                k += 1
             atoms: list[list[int]] = []
             for a0, a1 in pieces:
                 if atoms and a0 - atoms[-1][1] <= merge_gap and a1 - atoms[-1][0] <= max_w:
